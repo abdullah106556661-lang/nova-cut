@@ -1,0 +1,6 @@
+{
+  "name": "NovaCut Studio",
+  "description": "A comprehensive, high-performance web-based video editing and AI creative platform featuring multi-track timeline, canvas transforms, WebGL shader filters, keyframing, auto-captions, generative AI video, image, thumbnail and logo creators, user authentication, and template library.",
+  "requestFramePermissions": ["camera", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
