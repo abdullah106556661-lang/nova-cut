@@ -36,6 +36,7 @@ import {
 } from "lucide-react";
 import { useEditor, NavTab } from "../../context/EditorContext";
 import { useAuth, DAILY_CREDITS_MAX, JAZZCASH_NUMBER, COST_PHOTO, COST_VIDEO, COST_PROMPT } from "../../context/AuthContext";
+import { apiFetch } from "../../utils/api";
 
 interface GeneratedImageItem {
   url: string;
@@ -440,7 +441,7 @@ export const LiveAIAssistant: React.FC = () => {
       ]);
 
       try {
-        const response = await fetch("/api/ai/generate-image", {
+        const response = await apiFetch("/api/ai/generate-image", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -534,7 +535,7 @@ MULTILINGUAL MANDATE:
 }`;
 
       try {
-        const response = await fetch("/api/gemini/generate", {
+        const response = await apiFetch("/api/gemini/generate", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -623,7 +624,7 @@ NOVACUT STUDIO CONTEXT:
 
       // Attempt 1: Multi-turn Chat endpoint
       try {
-        const chatRes = await fetch("/api/gemini/chat", {
+        const chatRes = await apiFetch("/api/gemini/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -645,7 +646,7 @@ NOVACUT STUDIO CONTEXT:
 
       // Attempt 2: Direct generate endpoint fallback
       if (!replyText) {
-        const response = await fetch("/api/gemini/generate", {
+        const response = await apiFetch("/api/gemini/generate", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({

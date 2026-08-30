@@ -17,7 +17,7 @@ import { useAuth } from "../../context/AuthContext";
 import { useEditor } from "../../context/EditorContext";
 
 export const ProfileView: React.FC = () => {
-  const { user, updateProfile, logout, sendVerificationEmail, addNotification, setAuthModalOpen, setAuthInitialTab } = useAuth();
+  const { user, isAdmin, updateProfile, logout, sendVerificationEmail, addNotification, setAuthModalOpen, setAuthInitialTab } = useAuth();
   const { setActiveTab } = useEditor();
 
   const [name, setName] = useState(user?.name || "Abdullah");
@@ -136,7 +136,7 @@ export const ProfileView: React.FC = () => {
                 <input
                   type="email"
                   disabled
-                  value={user?.email || "abdullah106556661@gmail.com"}
+                  value={user?.email || ""}
                   className="w-full bg-slate-950/60 border border-slate-800 rounded-xl pl-9 pr-3 py-2 text-slate-400 outline-none text-xs cursor-not-allowed"
                 />
               </div>
@@ -184,7 +184,7 @@ export const ProfileView: React.FC = () => {
                 <div className="flex justify-between text-[11px] mb-1">
                   <span className="text-slate-400">AI Credits Remaining</span>
                   <span className="text-purple-300 font-mono font-bold">
-                    {user?.role === "SuperAdmin" || user?.email?.toLowerCase().trim() === "abdullah106556661@gmail.com" ? (
+                    {isAdmin ? (
                       <span className="text-emerald-400">∞ Unlimited (SuperAdmin)</span>
                     ) : (
                       `${user?.aiCreditsRemaining ?? 500} / 500 Daily`
@@ -194,7 +194,7 @@ export const ProfileView: React.FC = () => {
                 <div className="h-1.5 bg-slate-950 rounded-full overflow-hidden">
                   <div
                     className={`h-full rounded-full ${
-                      user?.role === "SuperAdmin" || user?.email?.toLowerCase().trim() === "abdullah106556661@gmail.com"
+                      isAdmin
                         ? "w-full bg-emerald-500"
                         : "w-[100%] bg-purple-500"
                     }`}

@@ -1,9 +1,8 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import {
   ShieldAlert,
   ShieldCheck,
   Lock,
-  Unlock,
   Users,
   Key,
   Activity,
@@ -12,14 +11,8 @@ import {
   AlertTriangle,
   CheckCircle2,
   XCircle,
-  Eye,
-  EyeOff,
   Search,
-  Filter,
   Download,
-  Trash2,
-  UserCheck,
-  UserX,
   Sparkles,
   Zap,
   HardDrive,
@@ -28,258 +21,219 @@ import {
   FileSpreadsheet,
   Clock,
   RefreshCw,
+  CreditCard,
+  Check,
+  X,
+  UserCheck,
 } from "lucide-react";
-import { useAuth, UserProfile } from "../../context/AuthContext";
+import { useAuth } from "../../context/AuthContext";
 import { useEditor } from "../../context/EditorContext";
+import { apiFetch } from "../../utils/api";
 
-interface SecurityLogEntry {
+interface PlatformUser {
+  id: string;
+  name: string;
+  email: string;
+  role: "user" | "creator" | "admin" | "superadmin";
+  plan: "free" | "creator" | "studio_pro";
+  status: "ACTIVE" | "SUSPENDED";
+  aiCreditsRemaining: number;
+  dailyCreditsLimit: number;
+  storageUsedMb: number;
+  storageLimitMb: number;
+  projectsCount: number;
+  isEmailVerified: boolean;
+  joinedDate: string;
+}
+
+interface AuditLog {
   id: string;
   timestamp: string;
-  eventType: "AUTH_LOGIN" | "PRIVILEGE_ESCALATION" | "API_CALL" | "ACCESS_DENIED" | "PROJECT_DELETE" | "SECURITY_ALERT";
+  eventType: string;
   ipAddress: string;
-  userEmail: string;
+  userId?: string;
+  userEmail?: string;
   status: "SUCCESS" | "BLOCKED" | "WARNING" | "CRITICAL";
   details: string;
 }
 
-const INITIAL_SECURITY_LOGS: SecurityLogEntry[] = [
-  {
-    id: "sec_1",
-    timestamp: "2026-08-25 12:03:14 UTC",
-    eventType: "AUTH_LOGIN",
-    ipAddress: "192.168.1.45 (US-East)",
-    userEmail: "abdullah106556661@gmail.com",
-    status: "SUCCESS",
-    details: "Admin session authenticated via Google OAuth with 2FA verified.",
-  },
-  {
-    id: "sec_2",
-    timestamp: "2026-08-25 11:58:22 UTC",
-    eventType: "API_CALL",
-    ipAddress: "10.0.4.18 (GCP Container)",
-    userEmail: "abdullah106556661@gmail.com",
-    status: "SUCCESS",
-    details: "Gemini 3.7 Flash Model Invocation: Storyboard Script Synthesis.",
-  },
-  {
-    id: "sec_3",
-    timestamp: "2026-08-25 11:42:09 UTC",
-    eventType: "ACCESS_DENIED",
-    ipAddress: "185.220.101.5 (Tor Exit Node)",
-    userEmail: "unknown_guest@anonymous",
-    status: "BLOCKED",
-    details: "Unauthorized attempt to access /admin API endpoints blocked by firewall.",
-  },
-  {
-    id: "sec_4",
-    timestamp: "2026-08-25 10:15:33 UTC",
-    eventType: "SECURITY_ALERT",
-    ipAddress: "34.120.98.11 (Cloud Run Proxy)",
-    userEmail: "system@novacut.internal",
-    status: "SUCCESS",
-    details: "SSL/TLS Certificate renewed. HSTS headers enforced across all routes.",
-  },
-  {
-    id: "sec_5",
-    timestamp: "2026-08-25 09:30:10 UTC",
-    eventType: "PRIVILEGE_ESCALATION",
-    ipAddress: "192.168.1.45 (US-East)",
-    userEmail: "abdullah106556661@gmail.com",
-    status: "SUCCESS",
-    details: "Elevated permissions granted for Studio Director role.",
-  },
-];
+interface PaymentRecord {
+  id: string;
+  userId: string;
+  userEmail: string;
+  plan: string;
+  amountPkr: number;
+  tid: string;
+  senderPhone?: string;
+  status: "pending" | "confirmed" | "rejected";
+  timestamp: string;
+}
 
-const MOCK_PLATFORM_USERS = [
-  {
-    id: "usr_1",
-    name: "Abdullah (Owner)",
-    email: "abdullah106556661@gmail.com",
-    role: "SuperAdmin",
-    plan: "studio_pro",
-    status: "ACTIVE",
-    credits: "Unlimited",
-    storage: "1.42 GB / 50 GB",
-    joined: "Aug 2026",
-  },
-  {
-    id: "usr_2",
-    name: "Elena Rostova",
-    email: "elena.vfx@studio.com",
-    role: "Creator",
-    plan: "creator",
-    status: "ACTIVE",
-    credits: 420,
-    storage: "6.8 GB / 25 GB",
-    joined: "Jul 2026",
-  },
-  {
-    id: "usr_3",
-    name: "Marcus Vance",
-    email: "marcus.content@agency.io",
-    role: "Pro",
-    plan: "studio_pro",
-    status: "ACTIVE",
-    credits: 480,
-    storage: "18.4 GB / 50 GB",
-    joined: "Aug 2026",
-  },
-  {
-    id: "usr_4",
-    name: "Suspicious Guest",
-    email: "bot_crawler_98@tempmail.org",
-    role: "User",
-    plan: "free",
-    status: "SUSPENDED",
-    credits: 0,
-    storage: "0 MB / 5 GB",
-    joined: "Aug 2026",
-  },
-];
+interface SystemStatus {
+  status: string;
+  hasApiKey: boolean;
+  nodeEnv: string;
+  platform: string;
+  uptimeSeconds: number;
+  model: string;
+  totalUsers: number;
+  totalAuditLogs: number;
+}
 
 export const AdminView: React.FC = () => {
-  const { user, addNotification } = useAuth();
+  const { user, isAdmin, isSuperAdmin, addNotification, setAuthModalOpen } = useAuth();
   const { setActiveTab } = useEditor();
 
-  // Admin Master Security Passcode state
-  const [securityKeyInput, setSecurityKeyInput] = useState("");
-  const [isKeyUnlocked, setIsKeyUnlocked] = useState(false);
-  const [passcodeError, setPasscodeError] = useState(false);
+  const [adminTab, setAdminTab] = useState<"overview" | "users" | "payments" | "logs" | "system">("overview");
+  const [loading, setLoading] = useState(false);
 
-  // Admin tabs
-  const [adminTab, setAdminTab] = useState<"security" | "users" | "models" | "logs" | "system">("security");
+  // Real backend data states
+  const [usersList, setUsersList] = useState<PlatformUser[]>([]);
+  const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
+  const [paymentsList, setPaymentsList] = useState<PaymentRecord[]>([]);
+  const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null);
 
-  // Users management state
-  const [usersList, setUsersList] = useState(MOCK_PLATFORM_USERS);
+  // Filter & Search
   const [searchUser, setSearchUser] = useState("");
-
-  // Security logs state
-  const [logs, setLogs] = useState<SecurityLogEntry[]>(INITIAL_SECURITY_LOGS);
   const [logFilter, setLogFilter] = useState<string>("ALL");
 
-  // Check if current user is an authorized admin
-  const isEmailAdmin =
-    user?.email?.toLowerCase() === "abdullah106556661@gmail.com" ||
-    user?.role?.toLowerCase() === "admin" ||
-    user?.role?.toLowerCase() === "superadmin" ||
-    user?.role?.toLowerCase() === "studio director";
+  // Fetch all admin data securely
+  const fetchAdminData = useCallback(async () => {
+    if (!isAdmin) return;
+    setLoading(true);
+    try {
+      // 1. Fetch Users
+      const usersRes = await apiFetch("/api/admin/users");
+      if (usersRes.ok) {
+        const data = await usersRes.json();
+        setUsersList(data.users || []);
+      }
 
-  const isAuthorized = isEmailAdmin || isKeyUnlocked;
+      // 2. Fetch Logs
+      const logsRes = await apiFetch("/api/admin/audit-logs");
+      if (logsRes.ok) {
+        const data = await logsRes.json();
+        setAuditLogs(data.logs || []);
+      }
 
-  // Handle Master Admin Key Unlock
-  const handleUnlockWithKey = (e?: React.FormEvent, customKey?: string) => {
-    if (e) e.preventDefault();
-    const keyToTest = (customKey || securityKeyInput).trim();
-    const validCodes = [
-      "NovaCutAdmin2026!",
-      "novacutadmin2026!",
-      "NovaCutAdmin2026",
-      "novacutadmin2026",
-      "admin",
-      "Admin",
-      "ADMIN",
-      "admin123",
-      "AdminMaster2026!",
-      "106556661",
-      "Enter Master",
-      "enter master",
-      "master",
-      "Master",
-      "superadmin",
-    ];
+      // 3. Fetch Payments
+      const payRes = await apiFetch("/api/admin/payments");
+      if (payRes.ok) {
+        const data = await payRes.json();
+        setPaymentsList(data.payments || []);
+      }
 
-    if (
-      validCodes.some((code) => code.toLowerCase() === keyToTest.toLowerCase()) ||
-      keyToTest.length >= 4
-    ) {
-      setIsKeyUnlocked(true);
-      setPasscodeError(false);
-      try {
-        sessionStorage.setItem("novacut_admin_token_valid", "true");
-      } catch {}
-      addNotification("Admin Security Override", "Master Security Credentials verified. Access granted.", "success");
-      // Add log
-      setLogs((prev) => [
-        {
-          id: `sec_${Date.now()}`,
-          timestamp: new Date().toISOString().replace("T", " ").slice(0, 19) + " UTC",
-          eventType: "PRIVILEGE_ESCALATION",
-          ipAddress: "127.0.0.1 (Local Session)",
-          userEmail: user?.email || "verified_admin@key",
-          status: "SUCCESS",
-          details: "Master Admin Security Passcode override executed successfully.",
-        },
-        ...prev,
-      ]);
-    } else {
-      setPasscodeError(true);
-      addNotification("Access Denied", "Invalid Admin Security Key. Click presets to unlock.", "error");
+      // 4. Fetch Health & Status
+      const statusRes = await apiFetch("/api/admin/status");
+      if (statusRes.ok) {
+        const data = await statusRes.json();
+        setSystemStatus(data);
+      }
+    } catch (err: any) {
+      console.error("Admin data fetch error:", err);
+      addNotification("Admin Sync Error", "Could not load administrative data from server.", "error");
+    } finally {
+      setLoading(false);
+    }
+  }, [isAdmin, addNotification]);
+
+  useEffect(() => {
+    if (isAdmin) {
+      fetchAdminData();
+    }
+  }, [isAdmin, fetchAdminData]);
+
+  // Role update handler
+  const handleUpdateRole = async (userId: string, newRole: string) => {
+    try {
+      const res = await apiFetch(`/api/admin/user/${userId}/role`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role: newRole }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to update role");
+
+      addNotification("Role Updated", `User role changed to ${newRole}.`, "success");
+      fetchAdminData();
+    } catch (err: any) {
+      addNotification("Update Error", err.message, "error");
     }
   };
 
-  // Toggle user status
-  const handleToggleUserStatus = (id: string) => {
-    setUsersList((prev) =>
-      prev.map((u) => {
-        if (u.id === id) {
-          const newStatus = u.status === "ACTIVE" ? "SUSPENDED" : "ACTIVE";
-          addNotification("User Updated", `${u.name} is now ${newStatus}.`, "info");
-          return { ...u, status: newStatus };
-        }
-        return u;
-      })
-    );
-  };
+  // Status toggle handler (Active / Suspended)
+  const handleToggleStatus = async (userId: string, currentStatus: string) => {
+    const newStatus = currentStatus === "ACTIVE" ? "SUSPENDED" : "ACTIVE";
+    try {
+      const res = await apiFetch(`/api/admin/user/${userId}/status`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: newStatus }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to toggle status");
 
-  // Elevate user role
-  const handleElevateRole = (id: string) => {
-    setUsersList((prev) =>
-      prev.map((u) => {
-        if (u.id === id) {
-          const roles = ["User", "Creator", "Pro", "Admin"];
-          const currentIdx = roles.indexOf(u.role);
-          const nextRole = roles[(currentIdx + 1) % roles.length];
-          addNotification("Role Changed", `${u.name} promoted to ${nextRole}.`, "success");
-          return { ...u, role: nextRole };
-        }
-        return u;
-      })
-    );
+      addNotification("Status Updated", `User is now ${newStatus}.`, "info");
+      fetchAdminData();
+    } catch (err: any) {
+      addNotification("Update Error", err.message, "error");
+    }
   };
 
   // Grant AI credits
-  const handleGrantCredits = (id: string, amount = 500) => {
-    setUsersList((prev) =>
-      prev.map((u) => {
-        if (u.id === id) {
-          if (u.credits === "Unlimited") {
-            addNotification("Credits Status", `${u.name} already has Unlimited AI Credits.`, "info");
-            return u;
-          }
-          const currentCredits = typeof u.credits === "number" ? u.credits : 500;
-          const newCredits = currentCredits + amount;
-          addNotification("Credits Granted", `Added +${amount} AI Credits to ${u.name}.`, "success");
-          return { ...u, credits: newCredits };
-        }
-        return u;
-      })
-    );
+  const handleGrantCredits = async (userId: string, amount: number, setUnlimited = false) => {
+    try {
+      const res = await apiFetch(`/api/admin/user/${userId}/credits`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ amount, setUnlimited }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to adjust credits");
+
+      addNotification("Credits Adjusted", setUnlimited ? "Set to Unlimited Credits." : `Added +${amount} credits.`, "success");
+      fetchAdminData();
+    } catch (err: any) {
+      addNotification("Error", err.message, "error");
+    }
+  };
+
+  // Verify JazzCash Payment
+  const handleVerifyPayment = async (paymentId: string, status: "confirmed" | "rejected") => {
+    try {
+      const res = await apiFetch(`/api/admin/payments/${paymentId}/verify`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to verify payment");
+
+      addNotification(
+        "Payment Processed",
+        `Payment ${status === "confirmed" ? "approved & Pro plan granted" : "marked as rejected"}.`,
+        "success"
+      );
+      fetchAdminData();
+    } catch (err: any) {
+      addNotification("Verification Error", err.message, "error");
+    }
   };
 
   // Export audit logs
   const handleExportLogs = () => {
-    const jsonStr = JSON.stringify(logs, null, 2);
+    const jsonStr = JSON.stringify(auditLogs, null, 2);
     const blob = new Blob([jsonStr], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `novacut-security-audit-logs-${Date.now()}.json`;
+    link.download = `novacut-audit-logs-${Date.now()}.json`;
     link.click();
-    addNotification("Audit Logs Exported", "Encrypted security log file downloaded.", "success");
+    addNotification("Audit Exported", "Encrypted audit log file downloaded.", "success");
   };
 
   // 1. STRICT ACCESS CONTROL SHIELD (When unauthorized)
-  if (!isAuthorized) {
+  if (!isAdmin) {
     return (
       <div className="min-h-[80vh] flex items-center justify-center px-4 py-12">
         <div className="max-w-md w-full bg-slate-900 border border-rose-500/30 rounded-3xl p-8 shadow-2xl backdrop-blur-xl relative overflow-hidden text-center space-y-6">
@@ -296,64 +250,37 @@ export const AdminView: React.FC = () => {
             </span>
             <h2 className="text-2xl font-black text-white mt-3">Admin Security Gatekeeper</h2>
             <p className="text-slate-400 text-xs mt-2 leading-relaxed">
-              Access to this console is restricted strictly to verified platform administrators. Your IP and session details have been recorded in the security audit stream.
+              Access to this console is strictly restricted to verified platform administrators. Your IP and session details are recorded in the security audit stream.
             </p>
           </div>
 
-          {/* Sign in as owner tip */}
-          <div className="bg-slate-950/80 border border-slate-800 rounded-xl p-3.5 text-left text-xs space-y-1">
-            <div className="text-slate-400">Authenticated Account:</div>
-            <div className="text-slate-200 font-mono font-medium truncate">
-              {user?.email || "Guest / Unauthenticated"}
+          <div className="p-4 bg-slate-950/80 rounded-2xl border border-slate-800 text-left space-y-2 text-xs">
+            <div className="flex justify-between items-center text-slate-400">
+              <span>Authentication Status:</span>
+              <span className="font-mono text-rose-400 font-bold">{user ? "Authenticated (User)" : "Guest"}</span>
             </div>
-            <div className="text-[11px] text-sky-400 pt-1">
-              Authorized Owner: <span className="underline">abdullah106556661@gmail.com</span>
+            <div className="flex justify-between items-center text-slate-400">
+              <span>Current Account:</span>
+              <span className="font-mono text-slate-200">{user?.email || "None"}</span>
+            </div>
+            <div className="flex justify-between items-center text-slate-400">
+              <span>Required Role:</span>
+              <span className="font-mono text-sky-400 font-bold">admin / superadmin</span>
             </div>
           </div>
 
-          {/* Admin Master Key Unlock Form */}
-          <form onSubmit={(e) => handleUnlockWithKey(e)} className="space-y-3 text-left">
-            <label className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
-              <Key className="w-3.5 h-3.5 text-sky-400" />
-              Enter Admin Security Key or Passcode
-            </label>
-
-            <input
-              type="password"
-              value={securityKeyInput}
-              onChange={(e) => {
-                setSecurityKeyInput(e.target.value);
-                setPasscodeError(false);
-              }}
-              placeholder="Enter Master Security Key..."
-              className={`w-full bg-slate-950 border rounded-xl px-4 py-2.5 text-xs text-slate-100 placeholder-slate-600 focus:outline-none transition-all ${
-                passcodeError
-                  ? "border-rose-500 ring-1 ring-rose-500"
-                  : "border-slate-800 focus:border-sky-500 focus:ring-1 focus:ring-sky-500"
-              }`}
-            />
-            {passcodeError && (
-              <p className="text-rose-400 text-xs flex items-center gap-1">
-                <AlertTriangle className="w-3.5 h-3.5" />
-                Invalid master key. Access denied.
-              </p>
-            )}
-
+          <div className="flex gap-3">
             <button
-              type="submit"
-              className="w-full py-2.5 rounded-xl bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 text-white font-bold text-xs transition-all shadow-lg shadow-sky-500/25 flex items-center justify-center gap-2 cursor-pointer"
+              onClick={() => setAuthModalOpen(true)}
+              className="flex-1 py-3 bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 text-white font-bold rounded-xl text-xs transition-all cursor-pointer"
             >
-              <Unlock className="w-4 h-4" />
-              Verify Admin Credentials
+              Sign In With Admin Account
             </button>
-          </form>
-
-          <div className="pt-2">
             <button
-              onClick={() => setActiveTab("dashboard")}
-              className="text-xs text-slate-400 hover:text-slate-200 transition-colors"
+              onClick={() => setActiveTab("editor")}
+              className="px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold rounded-xl text-xs transition-all cursor-pointer"
             >
-              ← Return to Creator Dashboard
+              Return to Studio
             </button>
           </div>
         </div>
@@ -361,7 +288,7 @@ export const AdminView: React.FC = () => {
     );
   }
 
-  // 2. AUTHORIZED ADMIN CONSOLE
+  // Filtered Users
   const filteredUsers = usersList.filter(
     (u) =>
       u.name.toLowerCase().includes(searchUser.toLowerCase()) ||
@@ -369,473 +296,444 @@ export const AdminView: React.FC = () => {
       u.role.toLowerCase().includes(searchUser.toLowerCase())
   );
 
-  const filteredLogs = logs.filter((log) => {
+  // Filtered Logs
+  const filteredLogs = auditLogs.filter((log) => {
     if (logFilter === "ALL") return true;
-    return log.status === logFilter || log.eventType === logFilter;
+    return log.status === logFilter;
   });
 
   return (
     <div className="max-w-7xl mx-auto px-4 py-8 space-y-8">
-      {/* Top Admin Security Banner */}
-      <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 border border-sky-500/30 rounded-3xl p-6 sm:p-8 backdrop-blur-xl shadow-2xl flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
-        <div>
-          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-semibold mb-3">
-            <ShieldCheck className="w-4 h-4" />
-            Security Mode: HIGH (Firewall Active • RBAC Enforced)
+      {/* Top Banner */}
+      <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-6 shadow-xl backdrop-blur-xl flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+        <div className="flex items-center gap-4">
+          <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-sky-500 to-indigo-600 flex items-center justify-center text-white shadow-lg shadow-sky-500/25">
+            <ShieldCheck className="w-7 h-7" />
           </div>
-          <h1 className="text-2xl sm:text-3xl font-black text-white tracking-tight">
-            NovaCut Executive Admin Console
-          </h1>
-          <p className="text-slate-400 text-sm mt-1">
-            Logged in as <span className="text-sky-300 font-semibold">{user?.email || "Authorized Admin"}</span> with full system governance and AI model oversight.
-          </p>
+          <div>
+            <div className="flex items-center gap-2">
+              <h1 className="text-xl font-black text-white">NovaCut Command & Control Console</h1>
+              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                {isSuperAdmin ? "SuperAdmin Mode" : "Admin Level 1"}
+              </span>
+            </div>
+            <p className="text-slate-400 text-xs mt-1">
+              Verified Administrator: <span className="text-sky-400 font-mono">{user?.email}</span> • Real-time server state & audit logs
+            </p>
+          </div>
         </div>
 
         <div className="flex items-center gap-3">
           <button
-            onClick={() => {
-              setIsKeyUnlocked(false);
-              addNotification("Admin Locked", "Admin session safely locked.", "info");
-            }}
-            className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-semibold transition-all active:scale-95"
+            onClick={fetchAdminData}
+            disabled={loading}
+            className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold rounded-xl text-xs transition-all border border-slate-700 cursor-pointer"
           >
-            <Lock className="w-3.5 h-3.5" />
-            Lock Console
+            <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} />
+            <span>Sync Live State</span>
           </button>
-
           <button
             onClick={handleExportLogs}
-            className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-white text-xs font-bold transition-all shadow-lg shadow-sky-500/20 active:scale-95"
+            className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-xl text-xs transition-all shadow-md cursor-pointer"
           >
             <Download className="w-3.5 h-3.5" />
-            Export Audit Logs
+            <span>Export Audit Logs</span>
           </button>
         </div>
       </div>
 
-      {/* Admin KPI Telemetry Bar */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-2">
-          <div className="flex items-center justify-between text-slate-400 text-xs font-medium">
-            <span>Platform Users</span>
-            <Users className="w-4 h-4 text-sky-400" />
-          </div>
-          <div className="text-2xl font-black text-white">4,829</div>
-          <div className="text-[11px] text-emerald-400 flex items-center gap-1 font-medium">
-            <CheckCircle2 className="w-3 h-3" /> +142 active today
-          </div>
-        </div>
-
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-2">
-          <div className="flex items-center justify-between text-slate-400 text-xs font-medium">
-            <span>AI Model Health</span>
-            <Sparkles className="w-4 h-4 text-purple-400" />
-          </div>
-          <div className="text-2xl font-black text-purple-300">Gemini 3.7 Flash</div>
-          <div className="text-[11px] text-emerald-400 flex items-center gap-1 font-medium">
-            <Radio className="w-3 h-3 animate-pulse" /> 99.98% uptime (34ms avg)
-          </div>
-        </div>
-
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-2">
-          <div className="flex items-center justify-between text-slate-400 text-xs font-medium">
-            <span>Threat Defense</span>
-            <ShieldAlert className="w-4 h-4 text-emerald-400" />
-          </div>
-          <div className="text-2xl font-black text-emerald-400">0 Breaches</div>
-          <div className="text-[11px] text-slate-400 font-medium">
-            48 suspicious requests blocked
-          </div>
-        </div>
-
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-2">
-          <div className="flex items-center justify-between text-slate-400 text-xs font-medium">
-            <span>Cloud Storage Pool</span>
-            <HardDrive className="w-4 h-4 text-yellow-400" />
-          </div>
-          <div className="text-2xl font-black text-white">124.6 GB</div>
-          <div className="text-[11px] text-slate-400 font-medium">
-            of 500 GB Tier 1 Quota
-          </div>
-        </div>
-      </div>
-
-      {/* Navigation Tabs for Admin Sections */}
-      <div className="flex items-center gap-2 border-b border-slate-800 pb-2 overflow-x-auto">
+      {/* Navigation Tabs */}
+      <div className="flex items-center gap-2 border-b border-slate-800 pb-4 overflow-x-auto">
         <button
-          onClick={() => setAdminTab("security")}
-          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all ${
-            adminTab === "security"
-              ? "bg-sky-500 text-white shadow-md shadow-sky-500/20"
-              : "text-slate-400 hover:text-white hover:bg-slate-800/60"
+          onClick={() => setAdminTab("overview")}
+          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+            adminTab === "overview"
+              ? "bg-sky-500 text-white shadow-md shadow-sky-500/25"
+              : "text-slate-400 hover:text-slate-200 hover:bg-slate-800"
           }`}
         >
-          <ShieldCheck className="w-3.5 h-3.5" />
-          Security & Firewall
+          <Activity className="w-4 h-4" />
+          <span>System Overview</span>
         </button>
 
         <button
           onClick={() => setAdminTab("users")}
-          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all ${
+          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
             adminTab === "users"
-              ? "bg-sky-500 text-white shadow-md shadow-sky-500/20"
-              : "text-slate-400 hover:text-white hover:bg-slate-800/60"
+              ? "bg-sky-500 text-white shadow-md shadow-sky-500/25"
+              : "text-slate-400 hover:text-slate-200 hover:bg-slate-800"
           }`}
         >
-          <Users className="w-3.5 h-3.5" />
-          User Management (RBAC)
+          <Users className="w-4 h-4" />
+          <span>User Management ({usersList.length})</span>
         </button>
 
         <button
-          onClick={() => setAdminTab("models")}
-          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all ${
-            adminTab === "models"
-              ? "bg-sky-500 text-white shadow-md shadow-sky-500/20"
-              : "text-slate-400 hover:text-white hover:bg-slate-800/60"
+          onClick={() => setAdminTab("payments")}
+          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+            adminTab === "payments"
+              ? "bg-sky-500 text-white shadow-md shadow-sky-500/25"
+              : "text-slate-400 hover:text-slate-200 hover:bg-slate-800"
           }`}
         >
-          <Zap className="w-3.5 h-3.5" />
-          AI Engine Telemetry
+          <CreditCard className="w-4 h-4" />
+          <span>JazzCash Payments ({paymentsList.filter((p) => p.status === "pending").length} Pending)</span>
         </button>
 
         <button
           onClick={() => setAdminTab("logs")}
-          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all ${
+          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
             adminTab === "logs"
-              ? "bg-sky-500 text-white shadow-md shadow-sky-500/20"
-              : "text-slate-400 hover:text-white hover:bg-slate-800/60"
+              ? "bg-sky-500 text-white shadow-md shadow-sky-500/25"
+              : "text-slate-400 hover:text-slate-200 hover:bg-slate-800"
           }`}
         >
-          <Activity className="w-3.5 h-3.5" />
-          Audit Logs
+          <Clock className="w-4 h-4" />
+          <span>Security Audit Trail ({auditLogs.length})</span>
         </button>
       </div>
 
-      {/* TAB 1: SECURITY & FIREWALL */}
-      {adminTab === "security" && (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <div className="lg:col-span-2 bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-6">
-            <div className="flex items-center justify-between">
-              <h3 className="text-base font-bold text-white flex items-center gap-2">
-                <ShieldAlert className="w-5 h-5 text-emerald-400" />
-                Active Security Protocols & Rules
-              </h3>
-              <span className="px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-400 text-xs font-mono">
-                ARMED
+      {/* TAB 1: SYSTEM OVERVIEW */}
+      {adminTab === "overview" && (
+        <div className="space-y-6">
+          {/* Metric cards */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-2">
+              <div className="flex items-center justify-between text-slate-400 text-xs">
+                <span>Active Users</span>
+                <Users className="w-4 h-4 text-sky-400" />
+              </div>
+              <div className="text-2xl font-black text-white">{usersList.length}</div>
+              <p className="text-[11px] text-emerald-400">Database Synchronized</p>
+            </div>
+
+            <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-2">
+              <div className="flex items-center justify-between text-slate-400 text-xs">
+                <span>Gemini API Status</span>
+                <Sparkles className="w-4 h-4 text-indigo-400" />
+              </div>
+              <div className="text-2xl font-black text-white">
+                {systemStatus?.hasApiKey ? "Connected" : "Key Needed"}
+              </div>
+              <p className="text-[11px] text-slate-400">gemini-3.7-flash with Multimodal</p>
+            </div>
+
+            <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-2">
+              <div className="flex items-center justify-between text-slate-400 text-xs">
+                <span>JazzCash Verifications</span>
+                <CreditCard className="w-4 h-4 text-emerald-400" />
+              </div>
+              <div className="text-2xl font-black text-white">
+                {paymentsList.filter((p) => p.status === "confirmed").length} Approved
+              </div>
+              <p className="text-[11px] text-amber-400">
+                {paymentsList.filter((p) => p.status === "pending").length} Awaiting Verification
+              </p>
+            </div>
+
+            <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-2">
+              <div className="flex items-center justify-between text-slate-400 text-xs">
+                <span>Security Events</span>
+                <ShieldAlert className="w-4 h-4 text-rose-400" />
+              </div>
+              <div className="text-2xl font-black text-white">{auditLogs.length}</div>
+              <p className="text-[11px] text-emerald-400">All Nodes Monitored</p>
+            </div>
+          </div>
+
+          {/* Core System Properties */}
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 space-y-4">
+            <h3 className="text-sm font-bold text-slate-200">Server Infrastructure Health</h3>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
+              <div className="p-4 bg-slate-950 rounded-2xl border border-slate-800 space-y-1">
+                <span className="text-slate-500 font-semibold uppercase text-[10px]">Runtime Container</span>
+                <div className="font-mono text-slate-200">{systemStatus?.platform || "Cloud Run Container"}</div>
+              </div>
+              <div className="p-4 bg-slate-950 rounded-2xl border border-slate-800 space-y-1">
+                <span className="text-slate-500 font-semibold uppercase text-[10px]">Active Node Environment</span>
+                <div className="font-mono text-emerald-400">{systemStatus?.nodeEnv || "Production"}</div>
+              </div>
+              <div className="p-4 bg-slate-950 rounded-2xl border border-slate-800 space-y-1">
+                <span className="text-slate-500 font-semibold uppercase text-[10px]">Server Uptime</span>
+                <div className="font-mono text-sky-400">
+                  {systemStatus?.uptimeSeconds ? `${Math.floor(systemStatus.uptimeSeconds / 60)}m ${Math.floor(systemStatus.uptimeSeconds % 60)}s` : "Online"}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* TAB 2: USER MANAGEMENT */}
+      {adminTab === "users" && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between gap-4">
+            <div className="relative flex-1 max-w-md">
+              <Search className="w-4 h-4 text-slate-500 absolute left-3 top-2.5" />
+              <input
+                type="text"
+                placeholder="Search users by name, email or role..."
+                value={searchUser}
+                onChange={(e) => setSearchUser(e.target.value)}
+                className="w-full bg-slate-900 border border-slate-800 rounded-xl pl-9 pr-3 py-2 text-slate-200 text-xs outline-none focus:border-sky-500"
+              />
+            </div>
+            <div className="text-xs text-slate-400 font-mono">
+              Total: <span className="text-white font-bold">{filteredUsers.length}</span> users
+            </div>
+          </div>
+
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-slate-950 text-slate-400 uppercase tracking-wider text-[10px] border-b border-slate-800">
+                  <tr>
+                    <th className="p-4">User Details</th>
+                    <th className="p-4">Role</th>
+                    <th className="p-4">Plan</th>
+                    <th className="p-4">AI Credits</th>
+                    <th className="p-4">Status</th>
+                    <th className="p-4 text-right">Admin Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800 text-slate-300">
+                  {filteredUsers.map((u) => (
+                    <tr key={u.id} className="hover:bg-slate-800/40 transition-colors">
+                      <td className="p-4">
+                        <div className="font-bold text-slate-100">{u.name}</div>
+                        <div className="text-slate-400 font-mono text-[11px]">{u.email}</div>
+                      </td>
+                      <td className="p-4">
+                        <span
+                          className={`px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-wider ${
+                            u.role === "superadmin"
+                              ? "bg-purple-500/20 text-purple-300 border border-purple-500/30"
+                              : u.role === "admin"
+                              ? "bg-sky-500/20 text-sky-300 border border-sky-500/30"
+                              : u.role === "creator"
+                              ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+                              : "bg-slate-800 text-slate-400"
+                          }`}
+                        >
+                          {u.role}
+                        </span>
+                      </td>
+                      <td className="p-4">
+                        <span className="font-semibold text-slate-200 capitalize">{u.plan.replace("_", " ")}</span>
+                      </td>
+                      <td className="p-4 font-mono text-sky-400 font-bold">
+                        {u.role === "superadmin" ? "Unlimited" : `${u.aiCreditsRemaining} / 500`}
+                      </td>
+                      <td className="p-4">
+                        <span
+                          className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                            u.status === "ACTIVE"
+                              ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                              : "bg-rose-500/10 text-rose-400 border border-rose-500/20"
+                          }`}
+                        >
+                          {u.status}
+                        </span>
+                      </td>
+                      <td className="p-4 text-right space-x-2">
+                        {/* Grant Credits */}
+                        <button
+                          onClick={() => handleGrantCredits(u.id, 500)}
+                          title="Add 500 Credits"
+                          className="px-2.5 py-1 bg-sky-500/10 hover:bg-sky-500/20 text-sky-400 border border-sky-500/30 rounded-lg text-[11px] font-semibold cursor-pointer"
+                        >
+                          +500 Credits
+                        </button>
+
+                        {/* Elevate Role (SuperAdmin only) */}
+                        {isSuperAdmin && (
+                          <button
+                            onClick={() => {
+                              const roles: ("user" | "creator" | "admin" | "superadmin")[] = ["user", "creator", "admin", "superadmin"];
+                              const cur = roles.indexOf(u.role);
+                              const next = roles[(cur + 1) % roles.length];
+                              handleUpdateRole(u.id, next);
+                            }}
+                            className="px-2.5 py-1 bg-purple-500/10 hover:bg-purple-500/20 text-purple-400 border border-purple-500/30 rounded-lg text-[11px] font-semibold cursor-pointer"
+                          >
+                            Cycle Role
+                          </button>
+                        )}
+
+                        {/* Suspend / Activate */}
+                        {u.role !== "superadmin" && (
+                          <button
+                            onClick={() => handleToggleStatus(u.id, u.status)}
+                            className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border cursor-pointer ${
+                              u.status === "ACTIVE"
+                                ? "bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border-rose-500/30"
+                                : "bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border-emerald-500/30"
+                            }`}
+                          >
+                            {u.status === "ACTIVE" ? "Suspend" : "Activate"}
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* TAB 3: JAZZCASH PAYMENTS */}
+      {adminTab === "payments" && (
+        <div className="space-y-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl overflow-hidden">
+            <div className="p-5 border-b border-slate-800 flex items-center justify-between">
+              <div>
+                <h3 className="text-sm font-bold text-slate-100">JazzCash Account: 03176901963</h3>
+                <p className="text-xs text-slate-400">Incoming Pro Plan Upgrades & TID Verification Queue</p>
+              </div>
+              <span className="px-3 py-1 bg-emerald-500/10 text-emerald-400 rounded-full text-xs font-bold border border-emerald-500/20">
+                JazzCash Official Gateway
               </span>
             </div>
 
-            <div className="space-y-3 text-xs">
-              <div className="p-4 rounded-xl bg-slate-950 border border-slate-800/80 flex items-center justify-between">
-                <div>
-                  <div className="font-bold text-slate-200">Role-Based Access Control (RBAC)</div>
-                  <div className="text-slate-400 text-[11px]">Enforces strict 403 authorization checks on /admin and backend mutations.</div>
-                </div>
-                <span className="px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 font-mono text-[10px] font-bold">
-                  ACTIVE
-                </span>
-              </div>
-
-              <div className="p-4 rounded-xl bg-slate-950 border border-slate-800/80 flex items-center justify-between">
-                <div>
-                  <div className="font-bold text-slate-200">DDoS Rate Limiter & Token Bucket</div>
-                  <div className="text-slate-400 text-[11px]">Restricts bursts over 60 req/min per IP to prevent scraper bot abuse.</div>
-                </div>
-                <span className="px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 font-mono text-[10px] font-bold">
-                  ENFORCED
-                </span>
-              </div>
-
-              <div className="p-4 rounded-xl bg-slate-950 border border-slate-800/80 flex items-center justify-between">
-                <div>
-                  <div className="font-bold text-slate-200">CSRF Token Verification & HSTS 2048-bit</div>
-                  <div className="text-slate-400 text-[11px]">Prevents cross-site forgery and strictly enforces HTTPS encryption.</div>
-                </div>
-                <span className="px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 font-mono text-[10px] font-bold">
-                  ENABLED
-                </span>
-              </div>
-
-              <div className="p-4 rounded-xl bg-slate-950 border border-slate-800/80 flex items-center justify-between">
-                <div>
-                  <div className="font-bold text-slate-200">AI Prompt Sanitization & Jailbreak Filter</div>
-                  <div className="text-slate-400 text-[11px]">Filters harmful injection payloads prior to Gemini 3.7 Flash execution.</div>
-                </div>
-                <span className="px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 font-mono text-[10px] font-bold">
-                  FILTERING
-                </span>
-              </div>
-            </div>
-          </div>
-
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4">
-            <h3 className="text-base font-bold text-white flex items-center gap-2">
-              <Key className="w-5 h-5 text-sky-400" />
-              Master Security Credentials
-            </h3>
-            <p className="text-slate-400 text-xs leading-relaxed">
-              SuperAdmin access can be unlocked using the owner email authentication or the Master Security Key.
-            </p>
-
-            <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 text-xs space-y-2">
-              <div className="text-slate-400">Primary SuperAdmin:</div>
-              <div className="text-sky-300 font-mono font-bold">abdullah106556661@gmail.com</div>
-              <div className="text-[11px] text-emerald-400">Status: Verified Owner</div>
-            </div>
-
-            <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 text-xs space-y-2">
-              <div className="text-slate-400">Master Override Passcode:</div>
-              <div className="text-slate-200 font-mono">NovaCutAdmin2026!</div>
-              <div className="text-[10px] text-slate-500">Rotate every 90 days for compliance.</div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* TAB 2: USER MANAGEMENT (RBAC) */}
-      {adminTab === "users" && (
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-6 shadow-xl">
-          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-            <div>
-              <h3 className="text-base font-bold text-white">Platform Users & Access Control</h3>
-              <p className="text-slate-400 text-xs mt-0.5">Manage permissions, elevate roles, suspend accounts, and distribute AI credits.</p>
-            </div>
-
-            <div className="relative w-full sm:w-64">
-              <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
-              <input
-                type="text"
-                placeholder="Search user name or email..."
-                value={searchUser}
-                onChange={(e) => setSearchUser(e.target.value)}
-                className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-9 pr-3 py-2 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-sky-500"
-              />
-            </div>
-          </div>
-
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
-              <thead className="border-b border-slate-800 text-slate-400 uppercase tracking-wider">
-                <tr>
-                  <th className="py-3 px-4 font-semibold">User</th>
-                  <th className="py-3 px-4 font-semibold">Role</th>
-                  <th className="py-3 px-4 font-semibold">Plan</th>
-                  <th className="py-3 px-4 font-semibold">Status</th>
-                  <th className="py-3 px-4 font-semibold">AI Credits</th>
-                  <th className="py-3 px-4 font-semibold text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-800/60 text-slate-300">
-                {filteredUsers.map((u) => (
-                  <tr key={u.id} className="hover:bg-slate-800/40 transition-colors">
-                    <td className="py-3.5 px-4 font-medium text-white">
-                      <div>{u.name}</div>
-                      <div className="text-[11px] text-slate-400 font-mono">{u.email}</div>
-                    </td>
-                    <td className="py-3.5 px-4">
-                      <span className="px-2.5 py-1 rounded-full bg-sky-500/10 border border-sky-500/20 text-sky-300 font-mono font-bold">
-                        {u.role}
-                      </span>
-                    </td>
-                    <td className="py-3.5 px-4 uppercase font-mono text-[11px] text-slate-400">
-                      {u.plan}
-                    </td>
-                    <td className="py-3.5 px-4">
-                      <span
-                        className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                          u.status === "ACTIVE"
-                            ? "bg-emerald-500/10 text-emerald-400"
-                            : "bg-rose-500/10 text-rose-400"
-                        }`}
-                      >
-                        {u.status}
-                      </span>
-                    </td>
-                    <td className="py-3.5 px-4 font-mono text-purple-300 font-semibold">
-                      {u.credits}
-                    </td>
-                    <td className="py-3.5 px-4 text-right space-x-2">
-                      <button
-                        onClick={() => handleElevateRole(u.id)}
-                        className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] transition-colors"
-                        title="Promote / Change Role"
-                      >
-                        Role
-                      </button>
-                      <button
-                        onClick={() => handleGrantCredits(u.id, 500)}
-                        className="px-2.5 py-1 rounded bg-purple-500/20 hover:bg-purple-500/30 text-purple-300 text-[11px] transition-colors"
-                        title="Grant +500 Credits"
-                      >
-                        +500 Cr
-                      </button>
-                      <button
-                        onClick={() => handleToggleUserStatus(u.id)}
-                        className={`px-2.5 py-1 rounded text-[11px] transition-colors ${
-                          u.status === "ACTIVE"
-                            ? "bg-rose-500/20 hover:bg-rose-500/30 text-rose-300"
-                            : "bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300"
-                        }`}
-                      >
-                        {u.status === "ACTIVE" ? "Suspend" : "Activate"}
-                      </button>
-                    </td>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-slate-950 text-slate-400 uppercase tracking-wider text-[10px] border-b border-slate-800">
+                  <tr>
+                    <th className="p-4">User Email</th>
+                    <th className="p-4">TID Code</th>
+                    <th className="p-4">Amount (PKR)</th>
+                    <th className="p-4">Sender Phone</th>
+                    <th className="p-4">Timestamp</th>
+                    <th className="p-4">Status</th>
+                    <th className="p-4 text-right">Verification</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      {/* TAB 3: AI ENGINE TELEMETRY */}
-      {adminTab === "models" && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-5">
-            <h3 className="text-base font-bold text-white flex items-center gap-2">
-              <Zap className="w-5 h-5 text-sky-400" />
-              Connected AI Models & Services
-            </h3>
-
-            <div className="space-y-4 text-xs">
-              <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
-                <div className="flex justify-between items-center">
-                  <span className="font-bold text-white text-sm">Gemini 3.7 Flash</span>
-                  <span className="px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 font-mono font-bold">ONLINE</span>
-                </div>
-                <div className="text-slate-400">Used for: Video Scripts, Storyboards, Auto-Captions, Copilot Chat, & Vision Analysis.</div>
-                <div className="flex justify-between text-[11px] text-slate-500 pt-1">
-                  <span>Latency: ~38ms</span>
-                  <span>Context: 1M Tokens</span>
-                </div>
-              </div>
-
-              <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
-                <div className="flex justify-between items-center">
-                  <span className="font-bold text-white text-sm">Flux / Stable Diffusion Image Engine</span>
-                  <span className="px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 font-mono font-bold">ONLINE</span>
-                </div>
-                <div className="text-slate-400">Used for: 8K Photo & Visual Generation matching user prompt exactly.</div>
-                <div className="flex justify-between text-[11px] text-slate-500 pt-1">
-                  <span>Resolution: 1280x720 / 1024x1024</span>
-                  <span>Engine: Multi-Fallback</span>
-                </div>
-              </div>
-
-              <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
-                <div className="flex justify-between items-center">
-                  <span className="font-bold text-white text-sm">Vector SVG Brand Synthesizer</span>
-                  <span className="px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 font-mono font-bold">ONLINE</span>
-                </div>
-                <div className="text-slate-400">Used for: Prompt-accurate vector logo generator & branding assets.</div>
-              </div>
-            </div>
-          </div>
-
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-5">
-            <h3 className="text-base font-bold text-white flex items-center gap-2">
-              <Server className="w-5 h-5 text-purple-400" />
-              Runtime Node Container Telemetry
-            </h3>
-
-            <div className="space-y-4 text-xs">
-              <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
-                <div className="flex justify-between text-slate-300 font-semibold">
-                  <span>Container Memory Usage</span>
-                  <span className="font-mono text-sky-400">142 MB / 512 MB</span>
-                </div>
-                <div className="w-full bg-slate-800 rounded-full h-2">
-                  <div className="bg-sky-500 h-2 rounded-full" style={{ width: "28%" }} />
-                </div>
-              </div>
-
-              <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
-                <div className="flex justify-between text-slate-300 font-semibold">
-                  <span>CPU Ingress Utilization</span>
-                  <span className="font-mono text-emerald-400">6.4%</span>
-                </div>
-                <div className="w-full bg-slate-800 rounded-full h-2">
-                  <div className="bg-emerald-500 h-2 rounded-full" style={{ width: "6.4%" }} />
-                </div>
-              </div>
-
-              <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
-                <div className="flex justify-between text-slate-300 font-semibold">
-                  <span>Active Dev Server Port</span>
-                  <span className="font-mono text-purple-400">3000 (0.0.0.0 Binding)</span>
-                </div>
-                <div className="text-slate-500 text-[11px]">Reverse proxy route: /api/* handled by Express.js v4.</div>
-              </div>
+                </thead>
+                <tbody className="divide-y divide-slate-800 text-slate-300">
+                  {paymentsList.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="p-8 text-center text-slate-500">
+                        No JazzCash transaction submissions currently pending.
+                      </td>
+                    </tr>
+                  ) : (
+                    paymentsList.map((pay) => (
+                      <tr key={pay.id} className="hover:bg-slate-800/40">
+                        <td className="p-4 font-mono font-semibold text-slate-200">{pay.userEmail}</td>
+                        <td className="p-4 font-mono text-sky-400 font-bold">{pay.tid}</td>
+                        <td className="p-4 font-bold text-slate-100">PKR {pay.amountPkr}</td>
+                        <td className="p-4 font-mono text-slate-400">{pay.senderPhone || "Direct TID"}</td>
+                        <td className="p-4 text-slate-400">{pay.timestamp}</td>
+                        <td className="p-4">
+                          <span
+                            className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                              pay.status === "confirmed"
+                                ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                                : pay.status === "rejected"
+                                ? "bg-rose-500/10 text-rose-400 border border-rose-500/20"
+                                : "bg-amber-500/10 text-amber-400 border border-amber-500/20"
+                            }`}
+                          >
+                            {pay.status.toUpperCase()}
+                          </span>
+                        </td>
+                        <td className="p-4 text-right space-x-2">
+                          {pay.status === "pending" && (
+                            <>
+                              <button
+                                onClick={() => handleVerifyPayment(pay.id, "confirmed")}
+                                className="px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-lg text-xs cursor-pointer"
+                              >
+                                Approve Pro
+                              </button>
+                              <button
+                                onClick={() => handleVerifyPayment(pay.id, "rejected")}
+                                className="px-3 py-1 bg-rose-600 hover:bg-rose-500 text-white font-bold rounded-lg text-xs cursor-pointer"
+                              >
+                                Reject
+                              </button>
+                            </>
+                          )}
+                          {pay.status === "confirmed" && (
+                            <span className="text-emerald-400 font-semibold text-xs flex items-center justify-end gap-1">
+                              <Check className="w-3.5 h-3.5" /> Verified
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
             </div>
           </div>
         </div>
       )}
 
-      {/* TAB 4: AUDIT LOGS */}
+      {/* TAB 4: SECURITY AUDIT TRAIL */}
       {adminTab === "logs" && (
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-5 shadow-xl">
-          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-            <div>
-              <h3 className="text-base font-bold text-white flex items-center gap-2">
-                <Activity className="w-5 h-5 text-sky-400" />
-                Tamper-Evident Security Audit Logs
-              </h3>
-              <p className="text-slate-400 text-xs mt-0.5">Real-time log stream of authorization, role changes, and API actions.</p>
+        <div className="space-y-4">
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex gap-2">
+              {["ALL", "SUCCESS", "BLOCKED", "WARNING"].map((f) => (
+                <button
+                  key={f}
+                  onClick={() => setLogFilter(f)}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                    logFilter === f
+                      ? "bg-sky-500 text-white"
+                      : "bg-slate-800 text-slate-400 hover:text-slate-200"
+                  }`}
+                >
+                  {f}
+                </button>
+              ))}
             </div>
-
-            <div className="flex items-center gap-2">
-              <select
-                value={logFilter}
-                onChange={(e) => setLogFilter(e.target.value)}
-                className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-sky-500"
-              >
-                <option value="ALL">All Severity Levels</option>
-                <option value="SUCCESS">SUCCESS</option>
-                <option value="BLOCKED">BLOCKED</option>
-                <option value="CRITICAL">CRITICAL</option>
-              </select>
-
-              <button
-                onClick={handleExportLogs}
-                className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-1.5 transition-colors"
-              >
-                <Download className="w-3.5 h-3.5" />
-                Download JSON
-              </button>
+            <div className="text-xs text-slate-400 font-mono">
+              Total logs: <span className="text-white font-bold">{filteredLogs.length}</span>
             </div>
           </div>
 
-          <div className="space-y-2">
-            {filteredLogs.map((log) => (
-              <div
-                key={log.id}
-                className="p-3.5 rounded-xl bg-slate-950 border border-slate-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs hover:border-slate-700 transition-colors"
-              >
-                <div className="space-y-1">
-                  <div className="flex items-center gap-2">
-                    <span
-                      className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
-                        log.status === "SUCCESS"
-                          ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
-                          : log.status === "BLOCKED"
-                          ? "bg-yellow-500/10 text-yellow-400 border border-yellow-500/20"
-                          : "bg-rose-500/10 text-rose-400 border border-rose-500/20"
-                      }`}
-                    >
-                      {log.status}
-                    </span>
-                    <span className="font-bold text-slate-200">{log.eventType}</span>
-                    <span className="text-slate-500 text-[11px] font-mono">{log.timestamp}</span>
-                  </div>
-                  <div className="text-slate-400 text-xs">{log.details}</div>
-                </div>
-
-                <div className="text-right shrink-0">
-                  <div className="text-[11px] font-mono text-sky-400">{log.userEmail}</div>
-                  <div className="text-[10px] text-slate-500 font-mono">{log.ipAddress}</div>
-                </div>
-              </div>
-            ))}
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-slate-950 text-slate-400 uppercase tracking-wider text-[10px] border-b border-slate-800">
+                  <tr>
+                    <th className="p-4">Timestamp</th>
+                    <th className="p-4">Event Type</th>
+                    <th className="p-4">Actor Email</th>
+                    <th className="p-4">IP Address</th>
+                    <th className="p-4">Status</th>
+                    <th className="p-4">Details</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800 text-slate-300 font-mono text-[11px]">
+                  {filteredLogs.map((log) => (
+                    <tr key={log.id} className="hover:bg-slate-800/40">
+                      <td className="p-4 text-slate-400 whitespace-nowrap">{log.timestamp}</td>
+                      <td className="p-4 font-bold text-slate-200">{log.eventType}</td>
+                      <td className="p-4 text-sky-400">{log.userEmail || "Anonymous / System"}</td>
+                      <td className="p-4 text-slate-400">{log.ipAddress}</td>
+                      <td className="p-4">
+                        <span
+                          className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                            log.status === "SUCCESS"
+                              ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                              : log.status === "BLOCKED"
+                              ? "bg-rose-500/10 text-rose-400 border border-rose-500/20"
+                              : "bg-amber-500/10 text-amber-400 border border-amber-500/20"
+                          }`}
+                        >
+                          {log.status}
+                        </span>
+                      </td>
+                      <td className="p-4 text-slate-300 max-w-xs truncate">{log.details}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       )}

@@ -1,16 +1,11 @@
-import React, { useState } from "react";
+import React from "react";
 import {
   ShieldAlert,
   ShieldCheck,
   Lock,
-  Unlock,
-  KeyRound,
   ArrowLeft,
   AlertTriangle,
   LogIn,
-  CheckCircle2,
-  Cpu,
-  Fingerprint,
 } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
 import { useEditor } from "../../context/EditorContext";
@@ -20,71 +15,16 @@ interface ProtectedRouteProps {
   requiredRole?: "admin" | "superadmin" | "user";
 }
 
-const VALID_ADMIN_PASSCODES = [
-  "NovaCutAdmin2026!",
-  "novacutadmin2026!",
-  "AdminMaster2026!",
-];
-
-const AUTHORIZED_EMAILS = [
-  "abdullah106556661@gmail.com",
-  "admin@novacut.internal",
-  "director@novacut.studio",
-];
-
 export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
   children,
   requiredRole = "admin",
 }) => {
-  const { user, isAuthenticated, setAuthModalOpen, setAuthInitialTab } = useAuth();
+  const { user, isAuthenticated, isAdmin, isSuperAdmin, setAuthModalOpen, setAuthInitialTab } = useAuth();
   const { setActiveTab } = useEditor();
 
-  const [passcodeInput, setPasscodeInput] = useState("");
-  const [passcodeError, setPasscodeError] = useState(false);
-  const [isPasscodeUnlocked, setIsPasscodeUnlocked] = useState(() => {
-    try {
-      return sessionStorage.getItem("novacut_admin_token_valid") === "true";
-    } catch {
-      return false;
-    }
-  });
-
-  // Check if current user is an authorized admin
-  const isEmailAdmin =
-    user?.email && AUTHORIZED_EMAILS.includes(user.email.toLowerCase().trim());
-  const isRoleAdmin =
-    user?.role === "SuperAdmin" ||
-    user?.role === "admin";
-
   const isAccessGranted =
-    isPasscodeUnlocked || (isAuthenticated && (isEmailAdmin || isRoleAdmin));
-
-  const verifyPasscode = (code: string) => {
-    const clean = code.trim();
-    const isMatch = VALID_ADMIN_PASSCODES.some(
-      (p) => p.toLowerCase() === clean.toLowerCase()
-    );
-
-    if (isMatch) {
-      setIsPasscodeUnlocked(true);
-      setPasscodeError(false);
-      try {
-        sessionStorage.setItem("novacut_admin_token_valid", "true");
-      } catch {
-        // ignore
-      }
-      return true;
-    } else {
-      setPasscodeError(true);
-      setTimeout(() => setPasscodeError(false), 3000);
-      return false;
-    }
-  };
-
-  const handlePasscodeUnlock = (e: React.FormEvent) => {
-    e.preventDefault();
-    verifyPasscode(passcodeInput);
-  };
+    isAuthenticated &&
+    (isSuperAdmin || isAdmin || (requiredRole === "user" && isAuthenticated));
 
   // If access is granted, render protected route content
   if (isAccessGranted) {
@@ -120,8 +60,7 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
 
         {/* Informative Warning */}
         <p className="text-xs sm:text-sm text-slate-300 mb-6 leading-relaxed">
-          This portal is reserved exclusively for the system administrator.
-          Unauthorized users cannot access or administer platform settings.
+          This portal is reserved exclusively for authenticated system administrators with verified server privileges.
         </p>
 
         {/* Status Box */}
@@ -147,42 +86,6 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
           </div>
         </div>
 
-        {/* Admin Credential Passcode Unlock */}
-        <form onSubmit={handlePasscodeUnlock} className="space-y-3 mb-6">
-          <label className="block text-xs font-semibold text-slate-300">
-            Admin Master 2FA Key
-          </label>
-
-          <div className="relative">
-            <KeyRound className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-            <input
-              type="password"
-              placeholder="Enter Master Security Key..."
-              value={passcodeInput}
-              onChange={(e) => setPasscodeInput(e.target.value)}
-              className={`w-full bg-slate-950 border ${
-                passcodeError
-                  ? "border-red-500 ring-1 ring-red-500"
-                  : "border-slate-700 focus:border-sky-500 focus:ring-1 focus:ring-sky-500"
-              } rounded-xl pl-10 pr-24 py-2.5 text-xs text-white placeholder-slate-500 outline-none font-mono transition-all`}
-            />
-            <button
-              type="submit"
-              className="absolute right-1.5 top-1/2 -translate-y-1/2 px-3 py-1.5 bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-500 hover:to-rose-500 text-white rounded-lg text-xs font-bold transition-all shadow-sm flex items-center gap-1 cursor-pointer"
-            >
-              <Unlock className="w-3 h-3" />
-              <span>Verify</span>
-            </button>
-          </div>
-
-          {passcodeError && (
-            <p className="text-[11px] text-red-400 font-medium flex items-center gap-1 animate-shake">
-              <AlertTriangle className="w-3.5 h-3.5" />
-              Invalid security passcode. Access denied.
-            </p>
-          )}
-        </form>
-
         {/* Action Buttons */}
         <div className="flex flex-col sm:flex-row items-center gap-3 pt-4 border-t border-slate-800">
           <button
@@ -190,7 +93,7 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
             className="w-full sm:w-1/2 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition-colors cursor-pointer"
           >
             <ArrowLeft className="w-4 h-4" />
-            <span>Return to Studio</span>
+            <span>Return to Dashboard</span>
           </button>
 
           <button

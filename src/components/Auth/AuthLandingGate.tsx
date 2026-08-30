@@ -19,12 +19,12 @@ import {
 import { useAuth, DAILY_CREDITS_MAX, JAZZCASH_NUMBER, JAZZCASH_TITLE } from "../../context/AuthContext";
 
 export const AuthLandingGate: React.FC = () => {
-  const { login, signUp, loginWithGoogle, loginAsAdmin, setJazzCashModalOpen } = useAuth();
+  const { login, signUp, loginWithGoogle, continueAsGuest, setJazzCashModalOpen } = useAuth();
 
   const [mode, setMode] = useState<"login" | "signup">("login");
   const [name, setName] = useState("");
-  const [email, setEmail] = useState("abdullah106556661@gmail.com");
-  const [password, setPassword] = useState("NovaCut2026!@#");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -33,24 +33,28 @@ export const AuthLandingGate: React.FC = () => {
     setError(null);
     setLoading(true);
 
+    const cleanEmail = email.trim();
+    const cleanPass = password.trim();
+    const cleanName = name.trim();
+
     try {
       if (mode === "login") {
-        if (!email) {
+        if (!cleanEmail) {
           setError("Please enter your email address.");
           setLoading(false);
           return;
         }
-        await login(email, name || email.split("@")[0], password);
+        await login(cleanEmail, cleanPass);
       } else {
-        if (!email || !name) {
-          setError("Please provide your name and email address.");
+        if (!cleanEmail) {
+          setError("Please provide your email address.");
           setLoading(false);
           return;
         }
-        await signUp(name, email, password);
+        await signUp(cleanName || cleanEmail.split("@")[0], cleanEmail, cleanPass);
       }
     } catch (err: any) {
-      setError(err?.message || "Authentication failed. Please try again.");
+      setError(err?.message || "Authentication failed. Please check your credentials or click 'Continue as Guest'.");
     } finally {
       setLoading(false);
     }
@@ -256,32 +260,27 @@ export const AuthLandingGate: React.FC = () => {
             </button>
           </form>
 
-          {/* Quick 1-Click Demo Logins */}
-          <div className="mt-5 pt-4 border-t border-slate-800/80 space-y-2">
-            <p className="text-[10px] text-slate-400 text-center font-semibold uppercase tracking-wider">
-              Fast 1-Click Access
-            </p>
+          {/* Alternative Sign-In Options */}
+          <div className="mt-5 pt-4 border-t border-slate-800/80 space-y-2.5">
+            {/* 1-Click Instant Guest Access */}
+            <button
+              type="button"
+              onClick={() => continueAsGuest()}
+              className="w-full py-2.5 px-4 rounded-xl bg-gradient-to-r from-emerald-600/90 to-teal-600/90 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer shadow-md shadow-emerald-950/40"
+            >
+              <Zap className="w-4 h-4 text-emerald-200 fill-emerald-200" />
+              <span>⚡ مہمان کے طور پر فوری داخل ہوں / Explore as Guest (500 Credits)</span>
+            </button>
 
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={loginAsAdmin}
-                className="py-2 px-3 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-amber-300 text-[11px] font-bold border border-amber-500/30 flex items-center justify-center gap-1.5 transition-all cursor-pointer"
-              >
-                <ShieldCheck className="w-3.5 h-3.5" />
-                <span>SuperAdmin</span>
-              </button>
+            <button
+              type="button"
+              onClick={() => loginWithGoogle()}
+              className="w-full py-2.5 px-4 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-slate-200 text-xs font-bold border border-slate-700 flex items-center justify-center gap-2 transition-all cursor-pointer shadow-sm"
+            >
+              <span>Continue with Google</span>
+            </button>
 
-              <button
-                type="button"
-                onClick={loginWithGoogle}
-                className="py-2 px-3 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-slate-200 text-[11px] font-bold border border-slate-700 flex items-center justify-center gap-1.5 transition-all cursor-pointer"
-              >
-                <span>Google Sign-In</span>
-              </button>
-            </div>
-
-            <div className="pt-2 text-center">
+            <div className="text-center pt-1">
               <button
                 type="button"
                 onClick={() => setJazzCashModalOpen(true)}

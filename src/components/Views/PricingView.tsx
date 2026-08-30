@@ -18,7 +18,7 @@ import { useEditor } from "../../context/EditorContext";
 
 export const PricingView: React.FC = () => {
   const [annual, setAnnual] = useState(true);
-  const { user, updateProfile, addNotification, setJazzCashModalOpen, resetDailyCredits } = useAuth();
+  const { user, isAdmin, updateProfile, addNotification, setJazzCashModalOpen, resetDailyCredits } = useAuth();
   const { setActiveTab } = useEditor();
   const [copied, setCopied] = useState(false);
 
@@ -123,7 +123,7 @@ export const PricingView: React.FC = () => {
           <div className="text-left">
             <p className="text-xs font-bold text-slate-200">Your Current Balance</p>
             <p className="text-lg font-black text-sky-400">
-              {user?.role === "SuperAdmin" || user?.email?.toLowerCase().trim() === "abdullah106556661@gmail.com" ? (
+              {isAdmin ? (
                 <span className="text-emerald-400 font-mono">∞ Unlimited (Admin)</span>
               ) : (
                 <span>
@@ -133,7 +133,7 @@ export const PricingView: React.FC = () => {
               )}
             </p>
           </div>
-          {!(user?.role === "SuperAdmin" || user?.email?.toLowerCase().trim() === "abdullah106556661@gmail.com") && (
+          {!isAdmin && (
             <button
               onClick={resetDailyCredits}
               className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-emerald-400 border border-emerald-500/30 text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"

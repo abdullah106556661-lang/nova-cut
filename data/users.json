@@ -1,0 +1,38 @@
+[
+  {
+    "id": "usr_superadmin_057f896c",
+    "email": "abdullah106556661@gmail.com",
+    "name": "Abdullah (Owner)",
+    "passwordHash": "$2a$10$75Jb0eF5j5N6R8nO0.X9O.42f5O7fR8o.6Zk5G3b0b7l8o2e0l1a2",
+    "role": "superadmin",
+    "plan": "studio_pro",
+    "avatarUrl": "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=200&auto=format&fit=crop&q=80",
+    "aiCreditsRemaining": 999999,
+    "dailyCreditsLimit": 500,
+    "lastCreditResetDate": "2026-08-27",
+    "storageUsedMb": 1420,
+    "storageLimitMb": 500000,
+    "isEmailVerified": true,
+    "status": "ACTIVE",
+    "createdAt": "2026-08-27T15:53:07.658Z",
+    "updatedAt": "2026-08-27T15:53:07.658Z"
+  },
+  {
+    "id": "usr_cd3266f0-79ef-47da-b2f2-33cca685de4d",
+    "email": "creator.studio@gmail.com",
+    "name": "Google Creator",
+    "passwordHash": "$2b$12$s45HljdG8EHrcArFYe4UHO97ShDsK3OSRBKOPPxB9Lr537Kk41t62",
+    "role": "user",
+    "plan": "free",
+    "avatarUrl": "https://api.dicebear.com/7.x/bottts/svg?seed=creator.studio@gmail.com",
+    "aiCreditsRemaining": 500,
+    "dailyCreditsLimit": 500,
+    "lastCreditResetDate": "2026-08-27",
+    "storageUsedMb": 0,
+    "storageLimitMb": 5000,
+    "isEmailVerified": true,
+    "status": "ACTIVE",
+    "createdAt": "2026-08-27T16:01:58.477Z",
+    "updatedAt": "2026-08-27T16:01:58.477Z"
+  }
+]

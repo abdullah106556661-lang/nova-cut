@@ -17,8 +17,8 @@ export class VideoExporter {
 
   public async exportProject(
     project: VideoProject,
-    settings: any,
-    onProgress?: (progress: any) => void
+    settings: Partial<ExportSettings> & { format?: string; bitrate?: number; resolution?: string; fps?: number },
+    onProgress?: (progress: number) => void
   ): Promise<Blob> {
     this.isCancelled = false;
 
@@ -73,7 +73,7 @@ export class VideoExporter {
 
     const fps = settings.fps || 30;
     const duration = project.settings.duration || 10;
-    const totalFrames = Math.floor(duration * fps);
+    const totalFrames = Math.max(1, Math.floor(duration * fps));
 
     // 2. Create offscreen canvas & renderer
     const canvas = document.createElement("canvas");
@@ -89,111 +89,151 @@ export class VideoExporter {
       onProgress(0.05);
     }
 
-    for (const track of project.tracks) {
-      for (const clip of track.clips) {
-        if (clip.mediaUrl && (clip.type === "video" || clip.type === "image")) {
-          if (clip.type === "video") {
-            const video = document.createElement("video");
-            video.crossOrigin = "anonymous";
-            video.src = clip.mediaUrl;
-            video.muted = true;
-            video.preload = "auto";
-            renderer.registerMediaElement(clip.id, video);
-          } else if (clip.type === "image") {
-            const img = new Image();
-            img.crossOrigin = "anonymous";
-            img.src = clip.mediaUrl;
-            renderer.registerMediaElement(clip.id, img);
-          }
-        }
-      }
-    }
+    const createdElements: (HTMLVideoElement | HTMLImageElement)[] = [];
 
-    // 4. Setup MediaRecorder with canvas stream
-    const stream = canvas.captureStream(fps);
-    
-    // Choose best supported MIME type
-    let mimeType = "video/webm;codecs=vp9";
-    if (settings.format === "mp4" && typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported("video/mp4")) {
-      mimeType = "video/mp4";
-    } else if (typeof MediaRecorder !== "undefined" && !MediaRecorder.isTypeSupported(mimeType)) {
-      mimeType = "video/webm";
-    }
-
-    const recordedChunks: Blob[] = [];
-    const mediaRecorder = new MediaRecorder(stream, {
-      mimeType,
-      videoBitsPerSecond: settings.bitrate || 6000000,
-    });
-
-    mediaRecorder.ondataavailable = (event) => {
-      if (event.data && event.data.size > 0) {
-        recordedChunks.push(event.data);
-      }
-    };
-
-    const exportPromise = new Promise<Blob>((resolve, reject) => {
-      mediaRecorder.onstop = () => {
-        const finalBlob = new Blob(recordedChunks, { type: mimeType });
-        resolve(finalBlob);
-      };
-      mediaRecorder.onerror = (e) => reject(e);
-    });
-
-    mediaRecorder.start();
-
-    // 5. Sequential frame rendering loop
-    const frameInterval = 1000 / fps;
-    const timeStep = 1 / fps;
-
-    for (let frame = 0; frame < totalFrames; frame++) {
-      if (this.isCancelled) {
-        mediaRecorder.stop();
-        throw new Error("Export was cancelled by user.");
-      }
-
-      const currentTime = frame * timeStep;
-
-      // Sync active videos' currentTime
+    try {
       for (const track of project.tracks) {
         for (const clip of track.clips) {
-          if (clip.type === "video") {
-            const el = renderer.getMediaElement(clip.id);
-            if (el instanceof HTMLVideoElement) {
-              if (currentTime >= clip.startTime && currentTime <= clip.startTime + clip.duration) {
-                const targetTime = clip.sourceStartTime + (currentTime - clip.startTime) * clip.speed;
-                el.currentTime = targetTime;
-              }
+          if (clip.mediaUrl && (clip.type === "video" || clip.type === "image")) {
+            if (clip.type === "video") {
+              const video = document.createElement("video");
+              video.crossOrigin = "anonymous";
+              video.src = clip.mediaUrl;
+              video.muted = true;
+              video.preload = "auto";
+              createdElements.push(video);
+              renderer.registerMediaElement(clip.id, video);
+            } else if (clip.type === "image") {
+              const img = new Image();
+              img.crossOrigin = "anonymous";
+              img.src = clip.mediaUrl;
+              createdElements.push(img);
+              renderer.registerMediaElement(clip.id, img);
             }
           }
         }
       }
 
-      // Render frame
-      renderer.renderFrame(ctx, project, currentTime, width, height);
+      // 4. Setup MediaRecorder with canvas stream
+      const stream = canvas.captureStream(fps);
 
-      const ratio = (frame + 1) / totalFrames;
-      if (onProgress) {
-        onProgress(ratio);
+      // Choose best supported MIME type
+      const possibleTypes = [
+        "video/webm;codecs=vp9",
+        "video/webm;codecs=vp8",
+        "video/webm",
+        "video/mp4",
+      ];
+      let mimeType = "video/webm";
+      if (typeof MediaRecorder !== "undefined") {
+        for (const type of possibleTypes) {
+          if (MediaRecorder.isTypeSupported(type)) {
+            mimeType = type;
+            break;
+          }
+        }
       }
 
-      // Allow event loop to tick so browser doesn't freeze
-      await new Promise((r) => setTimeout(r, Math.max(10, frameInterval / 3)));
+      const recordedChunks: Blob[] = [];
+      const mediaRecorder = new MediaRecorder(stream, {
+        mimeType,
+        videoBitsPerSecond: settings.bitrate || 8000000,
+      });
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          recordedChunks.push(event.data);
+        }
+      };
+
+      const exportPromise = new Promise<Blob>((resolve, reject) => {
+        mediaRecorder.onstop = () => {
+          const finalBlob = new Blob(recordedChunks, { type: mimeType });
+          resolve(finalBlob);
+        };
+        mediaRecorder.onerror = (e) => reject(e);
+      });
+
+      mediaRecorder.start(100);
+
+      // 5. Sequential frame rendering loop
+      const frameInterval = 1000 / fps;
+      const timeStep = 1 / fps;
+
+      for (let frame = 0; frame < totalFrames; frame++) {
+        if (this.isCancelled) {
+          mediaRecorder.stop();
+          throw new Error("Export was cancelled by user.");
+        }
+
+        const currentTime = frame * timeStep;
+
+        // Sync active videos' currentTime
+        const seekPromises: Promise<void>[] = [];
+        for (const track of project.tracks) {
+          for (const clip of track.clips) {
+            if (clip.type === "video") {
+              const el = renderer.getMediaElement(clip.id);
+              if (el instanceof HTMLVideoElement) {
+                if (currentTime >= clip.startTime && currentTime <= clip.startTime + clip.duration) {
+                  const targetTime = clip.sourceStartTime + (currentTime - clip.startTime) * clip.speed;
+                  if (Math.abs(el.currentTime - targetTime) > 0.05) {
+                    seekPromises.push(
+                      new Promise<void>((res) => {
+                        const onSeeked = () => {
+                          el.removeEventListener("seeked", onSeeked);
+                          res();
+                        };
+                        el.addEventListener("seeked", onSeeked, { once: true });
+                        el.currentTime = targetTime;
+                        setTimeout(res, 50); // safety timeout
+                      })
+                    );
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        if (seekPromises.length > 0) {
+          await Promise.all(seekPromises);
+        }
+
+        // Render frame
+        renderer.renderFrame(ctx, project, currentTime, width, height);
+
+        const ratio = (frame + 1) / totalFrames;
+        if (onProgress) {
+          onProgress(Math.min(0.96, 0.05 + ratio * 0.91));
+        }
+
+        // Allow event loop to tick so browser can capture stream
+        await new Promise((r) => setTimeout(r, Math.max(8, frameInterval / 3)));
+      }
+
+      if (onProgress) {
+        onProgress(0.98);
+      }
+
+      // Complete recording
+      mediaRecorder.stop();
+      const finalBlob = await exportPromise;
+
+      if (onProgress) {
+        onProgress(1.0);
+      }
+
+      return finalBlob;
+    } finally {
+      // Clean up media elements
+      for (const el of createdElements) {
+        if (el instanceof HTMLVideoElement) {
+          el.src = "";
+          el.load();
+        }
+      }
     }
-
-    if (onProgress) {
-      onProgress(0.98);
-    }
-
-    // Complete recording
-    mediaRecorder.stop();
-    const finalBlob = await exportPromise;
-
-    if (onProgress) {
-      onProgress(1.0);
-    }
-
-    return finalBlob;
   }
 }
 

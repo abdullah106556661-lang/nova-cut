@@ -3,17 +3,32 @@ import { X, Sparkles, Check, Lock, Mail, ShieldCheck } from "lucide-react";
 import { useAuth } from "../../../context/AuthContext";
 
 export const AuthModal: React.FC = () => {
-  const { authModalOpen, setAuthModalOpen, login, loginWithGoogle } = useAuth();
-  const [email, setEmail] = useState("abdullah106556661@gmail.com");
-  const [password, setPassword] = useState("••••••••••••");
-  const [name, setName] = useState("Abdullah");
+  const { authModalOpen, setAuthModalOpen, login, signUp, loginWithGoogle } = useAuth();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [name, setName] = useState("");
   const [isSignUp, setIsSignUp] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   if (!authModalOpen) return null;
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    login(email, name);
+    setError(null);
+    setLoading(true);
+    try {
+      if (isSignUp) {
+        await signUp(name, email, password);
+      } else {
+        await login(email, password);
+      }
+      setAuthModalOpen(false);
+    } catch (err: any) {
+      setError(err?.message || "Authentication failed.");
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -44,10 +59,17 @@ export const AuthModal: React.FC = () => {
 
         {/* Body */}
         <div className="p-6 space-y-4 text-xs">
+          {error && (
+            <div className="p-3 bg-red-950/80 border border-red-800 rounded-xl text-red-300 text-xs">
+              {error}
+            </div>
+          )}
+
           {/* Google Sign In Button */}
           <button
-            onClick={loginWithGoogle}
-            className="w-full py-2.5 bg-white hover:bg-slate-100 text-slate-900 font-bold rounded-xl shadow-md transition-all flex items-center justify-center gap-2.5 text-xs"
+            type="button"
+            onClick={() => loginWithGoogle()}
+            className="w-full py-2.5 bg-white hover:bg-slate-100 text-slate-900 font-bold rounded-xl shadow-md transition-all flex items-center justify-center gap-2.5 text-xs cursor-pointer"
           >
             <svg className="w-4 h-4" viewBox="0 0 24 24">
               <path

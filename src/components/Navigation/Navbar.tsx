@@ -39,10 +39,8 @@ export const Navbar: React.FC = () => {
 
   const isAdminUser = Boolean(
     user &&
-      (user.email?.toLowerCase().trim() === "abdullah106556661@gmail.com" ||
-        user.email?.toLowerCase().trim() === "admin@novacut.internal" ||
-        user.role === "admin" ||
-        user.role === "SuperAdmin")
+      (user.role?.toLowerCase() === "admin" ||
+        user.role?.toLowerCase() === "superadmin")
   );
 
   const baseNavLinks: { id: NavTab; label: string; icon: React.FC<{ className?: string }> }[] = [

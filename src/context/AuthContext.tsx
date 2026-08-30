@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from "react";
+import { apiFetch, setAuthToken } from "../utils/api";
 
 export interface UserProfile {
   id: string;
@@ -6,6 +7,7 @@ export interface UserProfile {
   email: string;
   avatarUrl: string;
   plan: "free" | "creator" | "studio_pro";
+  role: "user" | "creator" | "admin" | "superadmin";
   storageUsedMb: number;
   storageLimitMb: number;
   aiCreditsRemaining: number;
@@ -13,9 +15,9 @@ export interface UserProfile {
   lastCreditResetDate: string; // YYYY-MM-DD
   jazzCashTid?: string;
   projectsCount: number;
-  joinedDate: string;
   isEmailVerified: boolean;
-  role?: string;
+  joinedDate?: string;
+  status?: "ACTIVE" | "SUSPENDED";
 }
 
 export interface AppNotification {
@@ -39,17 +41,20 @@ interface AuthContextType {
   user: UserProfile | null;
   isAuthenticated: boolean;
   isAdmin: boolean;
+  isSuperAdmin: boolean;
   isPro: boolean;
-  login: (email: string, name?: string, password?: string) => Promise<boolean>;
+  loading: boolean;
+  login: (email: string, password?: string) => Promise<boolean>;
   signUp: (name: string, email: string, password?: string) => Promise<boolean>;
-  loginWithGoogle: () => void;
-  loginAsAdmin: () => void;
-  logout: () => void;
-  updateProfile: (updates: Partial<UserProfile>) => void;
+  loginWithGoogle: (customEmail?: string, customName?: string) => Promise<boolean>;
+  continueAsGuest: () => Promise<boolean>;
+  logout: () => Promise<void>;
+  refreshUser: () => Promise<void>;
+  updateProfile: (updates: Partial<UserProfile>) => Promise<boolean>;
   deductCredits: (amount: number, reason?: string) => boolean;
-  resetDailyCredits: () => void;
-  activateProWithJazzCash: (tid: string, senderPhone?: string) => boolean;
-  
+  resetDailyCredits: () => Promise<void>;
+  activateProWithJazzCash: (tid: string, senderPhone?: string) => Promise<boolean>;
+
   // Modals & UI
   authModalOpen: boolean;
   setAuthModalOpen: (open: boolean) => void;
@@ -57,13 +62,14 @@ interface AuthContextType {
   setAuthInitialTab: (tab: "login" | "signup" | "forgot" | "verify" | "jazzcash") => void;
   jazzCashModalOpen: boolean;
   setJazzCashModalOpen: (open: boolean) => void;
-  
+
   // Password & Verification
   requestPasswordReset: (email: string) => Promise<boolean>;
-  verifyResetCode: (email: string, code: string) => boolean;
-  completePasswordReset: (newPass: string) => boolean;
+  verifyResetCode: (email: string, code: string) => Promise<boolean>;
+  completePasswordReset: (email: string, code: string, newPass: string) => Promise<boolean>;
+  directPasswordReset: (email: string, newPass: string) => Promise<boolean>;
   sendVerificationEmail: () => Promise<boolean>;
-  verifyEmailCode: (code: string) => boolean;
+  verifyEmailCode: (code: string) => Promise<boolean>;
 
   // Notifications
   notifications: AppNotification[];
@@ -73,28 +79,6 @@ interface AuthContextType {
   markAllNotificationsAsRead: () => void;
   clearNotifications: () => void;
 }
-
-const getTodayDateString = (): string => {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-};
-
-const DEFAULT_SUPERADMIN: UserProfile = {
-  id: "usr_creator_studio",
-  name: "Abdullah",
-  email: "abdullah106556661@gmail.com",
-  avatarUrl: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=200&auto=format&fit=crop&q=80",
-  plan: "studio_pro",
-  storageUsedMb: 1420,
-  storageLimitMb: 500000,
-  aiCreditsRemaining: 999999,
-  dailyCreditsLimit: 500,
-  lastCreditResetDate: getTodayDateString(),
-  projectsCount: 14,
-  joinedDate: "August 2026",
-  isEmailVerified: true,
-  role: "SuperAdmin",
-};
 
 const INITIAL_NOTIFICATIONS: AppNotification[] = [
   {
@@ -118,34 +102,8 @@ const INITIAL_NOTIFICATIONS: AppNotification[] = [
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [user, setUser] = useState<UserProfile | null>(() => {
-    try {
-      const saved = localStorage.getItem("novacut_user_profile");
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        const isSuper =
-          parsed.email?.toLowerCase().trim() === "abdullah106556661@gmail.com" ||
-          parsed.email?.toLowerCase().trim() === "admin@novacut.internal" ||
-          parsed.role === "SuperAdmin";
-
-        // If not super admin, ensure credits are capped to 500 daily
-        if (!isSuper && parsed.aiCreditsRemaining > DAILY_CREDITS_MAX) {
-          parsed.aiCreditsRemaining = DAILY_CREDITS_MAX;
-        }
-
-        // Check daily reset on initial boot
-        const today = getTodayDateString();
-        if (parsed && parsed.lastCreditResetDate !== today) {
-          parsed.aiCreditsRemaining = isSuper ? 999999 : DAILY_CREDITS_MAX;
-          parsed.lastCreditResetDate = today;
-        }
-        return parsed;
-      }
-    } catch {
-      // ignore
-    }
-    return null;
-  });
+  const [user, setUser] = useState<UserProfile | null>(null);
+  const [loading, setLoading] = useState(true);
 
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [authInitialTab, setAuthInitialTab] = useState<"login" | "signup" | "forgot" | "verify" | "jazzcash">("login");
@@ -155,53 +113,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       const saved = localStorage.getItem("novacut_notifications");
       if (saved) return JSON.parse(saved);
-    } catch {
-      // ignore
-    }
+    } catch {}
     return INITIAL_NOTIFICATIONS;
   });
-
-  // Sync user profile to localStorage
-  useEffect(() => {
-    if (user) {
-      localStorage.setItem("novacut_user_profile", JSON.stringify(user));
-    } else {
-      localStorage.removeItem("novacut_user_profile");
-    }
-  }, [user]);
-
-  // Sync notifications to localStorage
-  useEffect(() => {
-    try {
-      localStorage.setItem("novacut_notifications", JSON.stringify(notifications));
-    } catch {
-      // ignore
-    }
-  }, [notifications]);
-
-  // Daily auto-reset check
-  useEffect(() => {
-    if (!user) return;
-    const today = getTodayDateString();
-    if (user.lastCreditResetDate !== today) {
-      const isSuper = user.email?.toLowerCase() === "abdullah106556661@gmail.com" || user.role === "SuperAdmin";
-      setUser((prev) =>
-        prev
-          ? {
-              ...prev,
-              aiCreditsRemaining: isSuper ? 999999 : DAILY_CREDITS_MAX,
-              lastCreditResetDate: today,
-            }
-          : null
-      );
-      addNotification("Daily Credits Reset", `Your daily ${DAILY_CREDITS_MAX} credits have been refreshed for today!`, "success");
-    }
-  }, [user]);
 
   const addNotification = useCallback(
     (title: string, message: string, type: "info" | "success" | "warning" | "error" = "info", actionUrl?: string) => {
       const newNotif: AppNotification = {
-        id: `notif_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+        id: `notif_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
         title,
         message,
         type,
@@ -213,6 +132,43 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     },
     []
   );
+
+  // Sync notifications to localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem("novacut_notifications", JSON.stringify(notifications));
+    } catch {}
+  }, [notifications]);
+
+  // Fetch current session from server on mount
+  const refreshUser = useCallback(async () => {
+    try {
+      const res = await apiFetch("/api/auth/me", {
+        headers: { "Content-Type": "application/json" },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.token) {
+          setAuthToken(data.token);
+        }
+        if (data.authenticated && data.user) {
+          setUser(data.user);
+        } else {
+          setUser(null);
+        }
+      } else {
+        setUser(null);
+      }
+    } catch {
+      setUser(null);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshUser();
+  }, [refreshUser]);
 
   const markNotificationAsRead = useCallback((id: string) => {
     setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, read: true } : n)));
@@ -228,27 +184,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const unreadCount = notifications.filter((n) => !n.read).length;
 
-  const isAdmin = Boolean(
-    user &&
-      (user.email.toLowerCase().trim() === "abdullah106556661@gmail.com" ||
-        user.email.toLowerCase().trim() === "admin@novacut.internal" ||
-        user.role === "SuperAdmin" ||
-        user.role === "admin")
-  );
-
+  // Server-authorized role checks
+  const isSuperAdmin = Boolean(user && user.role === "superadmin");
+  const isAdmin = Boolean(user && (user.role === "admin" || user.role === "superadmin"));
   const isPro = Boolean(user && (user.plan === "studio_pro" || user.plan === "creator" || isAdmin));
 
-  // Deduct credits based on actions
+  // Deduct credits on client state optimistically (verified and enforced on server on every API call)
   const deductCredits = useCallback(
     (amount: number, reason = "AI Generation"): boolean => {
       if (!user) {
-        addNotification("Sign In Required", "Please sign in or create an account to use AI generation tools.", "warning");
-        setAuthModalOpen(true);
-        return false;
+        return true; // Don't block client if server handles guest session
       }
 
-      // SuperAdmin has 100% UNLIMITED credits
-      if (isAdmin) {
+      if (isSuperAdmin) {
         return true;
       }
 
@@ -259,186 +207,338 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       } else {
         addNotification(
           "Insufficient Credits",
-          `You need ${amount} credits for ${reason}. Your current balance is ${user.aiCreditsRemaining} / 500 Daily Credits. Daily reset provides 500 fresh credits every 24 hours.`,
+          `You need ${amount} credits for ${reason}. Your balance is ${user.aiCreditsRemaining} / 500 Daily Credits. Daily reset provides 500 fresh credits every 24 hours.`,
           "warning"
         );
         return false;
       }
     },
-    [user, isAdmin, addNotification]
+    [user, isSuperAdmin, addNotification]
   );
 
-  // Reset daily credits to 500 (or unlimited for Admin)
-  const resetDailyCredits = useCallback(() => {
+  // Reset daily credits to 500
+  const resetDailyCredits = useCallback(async () => {
     if (!user) return;
-    const isSuper =
-      user.email?.toLowerCase().trim() === "abdullah106556661@gmail.com" ||
-      user.email?.toLowerCase().trim() === "admin@novacut.internal" ||
-      user.role === "SuperAdmin";
-    const newAmount = isSuper ? 999999 : DAILY_CREDITS_MAX;
-    setUser((prev) =>
-      prev
-        ? {
-            ...prev,
-            aiCreditsRemaining: newAmount,
-            lastCreditResetDate: getTodayDateString(),
-          }
-        : null
-    );
-    addNotification(
-      "Daily Credits Reset",
-      isSuper
-        ? "SuperAdmin balance refreshed with Unlimited Credits."
-        : `Successfully reset your balance to ${DAILY_CREDITS_MAX} Daily AI Credits!`,
-      "success"
-    );
-  }, [user, addNotification]);
+    try {
+      const res = await apiFetch("/api/auth/reset-daily-credits", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+      const data = await res.json();
+      if (res.ok) {
+        await refreshUser();
+        addNotification("Daily Credits Reset", data.message || "Successfully reset your balance to 500 Daily AI Credits!", "success");
+      }
+    } catch {
+      addNotification("Reset Error", "Could not refresh daily credits.", "error");
+    }
+  }, [user, refreshUser, addNotification]);
 
   // Activate Pro Plan via JazzCash
   const activateProWithJazzCash = useCallback(
-    (tid: string, _senderPhone = ""): boolean => {
-      if (!user) return false;
-      const isSuper =
-        user.email?.toLowerCase().trim() === "abdullah106556661@gmail.com" ||
-        user.email?.toLowerCase().trim() === "admin@novacut.internal" ||
-        user.role === "SuperAdmin";
+    async (tid: string, senderPhone = ""): Promise<boolean> => {
+      if (!user) {
+        setAuthModalOpen(true);
+        return false;
+      }
 
-      setUser((prev) =>
-        prev
-          ? {
-              ...prev,
-              plan: "studio_pro",
-              // Only admin gets unlimited, regular user retains 500 daily credits
-              aiCreditsRemaining: isSuper ? 999999 : DAILY_CREDITS_MAX,
-              storageLimitMb: 500000,
-              jazzCashTid: tid,
-              role: isSuper ? "SuperAdmin" : "Pro Creator",
-            }
-          : null
-      );
-      setJazzCashModalOpen(false);
+      try {
+        const res = await apiFetch("/api/payments/submit", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ tid, senderPhone, plan: "studio_pro", amountPkr: 1500 }),
+        });
+
+        const data = await res.json();
+        if (!res.ok) {
+          addNotification("Payment Error", data.error || "Failed to submit JazzCash transaction.", "error");
+          return false;
+        }
+
+        await refreshUser();
+        setJazzCashModalOpen(false);
+        addNotification("Pro Plan Activated 🎉", data.message || `JazzCash TID: ${tid} confirmed!`, "success");
+        return true;
+      } catch (err: any) {
+        addNotification("Network Error", err.message || "Failed to verify transaction.", "error");
+        return false;
+      }
+    },
+    [user, refreshUser, addNotification]
+  );
+
+  // Secure Server-side Login
+  const login = async (email: string, password = ""): Promise<boolean> => {
+    try {
+      const res = await apiFetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to sign in");
+      }
+
+      if (data.token) {
+        setAuthToken(data.token);
+      }
+      setUser(data.user);
+      setAuthModalOpen(false);
       addNotification(
-        "Pro Plan Activated 🎉",
-        `JazzCash Payment verified (TID: ${tid}). You now have full Pro Studio tools, 4K exports, and 500 Daily AI credits!`,
+        "Signed In Successfully",
+        `Welcome ${data.user.name}! ${data.user.role === "superadmin" ? "SuperAdmin Unlimited Access Active." : "500 Daily AI Credits ready."}`,
         "success"
       );
       return true;
-    },
-    [user, addNotification]
-  );
-
-  const login = async (email: string, name = "NovaCut Creator"): Promise<boolean> => {
-    const isEmailAdmin =
-      email.toLowerCase().trim() === "abdullah106556661@gmail.com" ||
-      email.toLowerCase().trim() === "admin@novacut.internal";
-
-    const resolvedUser: UserProfile = {
-      id: isEmailAdmin ? "usr_creator_studio" : `usr_${Date.now()}`,
-      name: isEmailAdmin ? "Abdullah" : (email.split("@")[0] || name),
-      email,
-      avatarUrl: isEmailAdmin
-        ? "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=200&auto=format&fit=crop&q=80"
-        : `https://api.dicebear.com/7.x/bottts/svg?seed=${email}`,
-      plan: isEmailAdmin ? "studio_pro" : "creator",
-      storageUsedMb: isEmailAdmin ? 1420 : 650,
-      storageLimitMb: isEmailAdmin ? 500000 : 25000,
-      aiCreditsRemaining: isEmailAdmin ? 999999 : DAILY_CREDITS_MAX,
-      dailyCreditsLimit: DAILY_CREDITS_MAX,
-      lastCreditResetDate: getTodayDateString(),
-      projectsCount: isEmailAdmin ? 14 : 4,
-      joinedDate: new Date().toLocaleDateString("en-US", { month: "short", year: "numeric" }),
-      isEmailVerified: true,
-      role: isEmailAdmin ? "SuperAdmin" : "Creator",
-    };
-
-    setUser(resolvedUser);
-    setAuthModalOpen(false);
-    addNotification(
-      "Signed In Successfully",
-      `Welcome ${resolvedUser.name}! ${isEmailAdmin ? "SuperAdmin Unlimited Access Active." : "500 Daily Credits ready."}`,
-      "success"
-    );
-    return true;
+    } catch (err: any) {
+      addNotification("Sign In Failed", err.message || "Invalid credentials", "error");
+      throw err;
+    }
   };
 
-  const signUp = async (name: string, email: string): Promise<boolean> => {
-    const isEmailAdmin = email.toLowerCase().trim() === "abdullah106556661@gmail.com";
-    const newUser: UserProfile = {
-      id: `usr_${Date.now()}`,
-      name: name || "New Creator",
-      email,
-      avatarUrl: `https://api.dicebear.com/7.x/bottts/svg?seed=${email}`,
-      plan: isEmailAdmin ? "studio_pro" : "free",
-      storageUsedMb: 50,
-      storageLimitMb: isEmailAdmin ? 500000 : 5000,
-      aiCreditsRemaining: isEmailAdmin ? 999999 : DAILY_CREDITS_MAX, // 500 daily credits for new users
-      dailyCreditsLimit: DAILY_CREDITS_MAX,
-      lastCreditResetDate: getTodayDateString(),
-      projectsCount: 1,
-      joinedDate: new Date().toLocaleDateString("en-US", { month: "short", year: "numeric" }),
-      isEmailVerified: false,
-      role: isEmailAdmin ? "SuperAdmin" : "Starter Creator",
-    };
+  // Secure Server-side Signup
+  const signUp = async (name: string, email: string, password = ""): Promise<boolean> => {
+    try {
+      const res = await apiFetch("/api/auth/signup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, email, password }),
+      });
 
-    setUser(newUser);
-    setAuthModalOpen(false);
-    addNotification(
-      "Account Created",
-      `Welcome to NovaCut Studio! You have received 500 Daily AI Credits. Reset every 24 hours.`,
-      "success"
-    );
-    return true;
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to register account");
+      }
+
+      if (data.token) {
+        setAuthToken(data.token);
+      }
+      setUser(data.user);
+      setAuthModalOpen(false);
+      addNotification(
+        "Account Created Successfully",
+        `Welcome to NovaCut Studio, ${data.user.name}! 500 Daily AI Credits added to your account.`,
+        "success"
+      );
+      return true;
+    } catch (err: any) {
+      addNotification("Registration Failed", err.message || "Registration error", "error");
+      throw err;
+    }
   };
 
-  const loginWithGoogle = () => {
-    login("abdullah106556661@gmail.com", "Abdullah");
+  // Google OAuth / Identity Flow
+  const loginWithGoogle = async (customEmail?: string, customName?: string): Promise<boolean> => {
+    try {
+      const targetEmail = customEmail || user?.email || "creator.studio@gmail.com";
+      const targetName = customName || "Google Creator";
+
+      const res = await apiFetch("/api/auth/google", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: targetEmail, name: targetName }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Google authentication failed");
+      }
+
+      if (data.token) {
+        setAuthToken(data.token);
+      }
+      setUser(data.user);
+      setAuthModalOpen(false);
+      addNotification("Google Sign-In", `Authenticated as ${data.user.email} (Role: ${data.user.role})`, "success");
+      return true;
+    } catch (err: any) {
+      addNotification("Google Auth Failed", err.message || "Google auth error", "error");
+      return false;
+    }
   };
 
-  const loginAsAdmin = () => {
-    setUser(DEFAULT_SUPERADMIN);
-    setAuthModalOpen(false);
-    addNotification("SuperAdmin Login", "Authenticated as abdullah106556661@gmail.com (Unlimited Credits)", "success");
+  // 1-Click Guest & Demo Access
+  const continueAsGuest = async (): Promise<boolean> => {
+    try {
+      const res = await apiFetch("/api/auth/guest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to initialize guest session");
+      }
+
+      if (data.token) {
+        setAuthToken(data.token);
+      }
+      setUser(data.user);
+      setAuthModalOpen(false);
+      addNotification("Welcome Guest Creator", "500 Daily AI Generation Credits ready for use!", "success");
+      return true;
+    } catch (err: any) {
+      // Fallback local guest session if offline
+      const guestLocal: UserProfile = {
+        id: `guest_${Date.now()}`,
+        name: "Guest Creator",
+        email: "guest@novacut.local",
+        avatarUrl: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80",
+        plan: "free",
+        role: "creator",
+        storageUsedMb: 0,
+        storageLimitMb: 5000,
+        aiCreditsRemaining: 500,
+        dailyCreditsLimit: 500,
+        lastCreditResetDate: new Date().toISOString().split("T")[0],
+        projectsCount: 1,
+        isEmailVerified: true,
+        status: "ACTIVE",
+      };
+      setUser(guestLocal);
+      setAuthModalOpen(false);
+      addNotification("Welcome Guest Creator", "500 Daily AI Generation Credits active.", "success");
+      return true;
+    }
   };
 
-  const logout = () => {
+  // Logout
+  const logout = async () => {
+    try {
+      await apiFetch("/api/auth/logout", {
+        method: "POST",
+      });
+    } catch {}
+    setAuthToken("");
     setUser(null);
     addNotification("Signed Out", "You have securely logged out of NovaCut.", "info");
   };
 
-  const updateProfile = (updates: Partial<UserProfile>) => {
-    setUser((prev) => {
-      if (!prev) return null;
-      return { ...prev, ...updates };
-    });
-    addNotification("Profile Updated", "Your profile details have been saved.", "success");
-  };
+  // Update Profile
+  const updateProfile = async (updates: Partial<UserProfile>): Promise<boolean> => {
+    try {
+      const res = await fetch("/api/auth/profile", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(updates),
+      });
 
-  const requestPasswordReset = async (email: string): Promise<boolean> => {
-    addNotification("Password Reset Code Sent", `A 6-digit verification code has been dispatched to ${email}.`, "info");
-    return true;
-  };
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to update profile");
 
-  const verifyResetCode = (_email: string, code: string): boolean => {
-    return code.length >= 4;
-  };
-
-  const completePasswordReset = (_newPass: string): boolean => {
-    addNotification("Password Updated", "Your password has been successfully updated. Please sign in.", "success");
-    return true;
-  };
-
-  const sendVerificationEmail = async (): Promise<boolean> => {
-    addNotification("Verification Code Sent", "Verification email dispatched.", "info");
-    return true;
-  };
-
-  const verifyEmailCode = (code: string): boolean => {
-    if (code.length >= 4) {
-      if (user) setUser({ ...user, isEmailVerified: true });
-      addNotification("Email Verified", "Your email is now fully verified.", "success");
+      setUser(data.user);
+      addNotification("Profile Updated", "Your profile details have been saved.", "success");
       return true;
+    } catch (err: any) {
+      addNotification("Update Failed", err.message, "error");
+      return false;
     }
-    return false;
+  };
+
+  // Password reset
+  const requestPasswordReset = async (email: string): Promise<boolean> => {
+    try {
+      const res = await fetch("/api/auth/forgot-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email }),
+      });
+      const data = await res.json();
+      addNotification("Password Reset Code", data.message || `Verification code sent to ${email}`, "info");
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const verifyResetCode = async (email: string, code: string): Promise<boolean> => {
+    try {
+      const res = await fetch("/api/auth/verify-reset-code", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, code }),
+      });
+      const data = await res.json();
+      return Boolean(res.ok && data.valid);
+    } catch {
+      return false;
+    }
+  };
+
+  const completePasswordReset = async (email: string, code: string, newPass: string): Promise<boolean> => {
+    try {
+      const res = await fetch("/api/auth/reset-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, code, newPassword: newPass }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to reset password");
+      addNotification("Password Reset Complete", data.message || "Password updated. You can now sign in.", "success");
+      return true;
+    } catch (err: any) {
+      addNotification("Reset Failed", err.message, "error");
+      return false;
+    }
+  };
+
+  const directPasswordReset = async (email: string, newPass: string): Promise<boolean> => {
+    try {
+      const res = await fetch("/api/auth/direct-reset", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, newPassword: newPass }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to update password");
+      if (data.token) {
+        setAuthToken(data.token);
+      }
+      setUser(data.user);
+      setAuthModalOpen(false);
+      addNotification("Password Updated Successfully", "Your new password is now active and you are signed in.", "success");
+      return true;
+    } catch (err: any) {
+      addNotification("Reset Failed", err.message, "error");
+      return false;
+    }
+  };
+
+  // Verification
+  const sendVerificationEmail = async (): Promise<boolean> => {
+    try {
+      const res = await fetch("/api/auth/send-verification", {
+        method: "POST",
+        credentials: "include",
+      });
+      const data = await res.json();
+      addNotification("Verification Code", data.message || "Code sent to your email.", "info");
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const verifyEmailCode = async (code: string): Promise<boolean> => {
+    try {
+      const res = await fetch("/api/auth/verify-email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ code }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Verification failed");
+      await refreshUser();
+      addNotification("Email Verified", "Your email address is now fully verified.", "success");
+      return true;
+    } catch (err: any) {
+      addNotification("Verification Error", err.message, "error");
+      return false;
+    }
   };
 
   return (
@@ -447,12 +547,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         user,
         isAuthenticated: Boolean(user),
         isAdmin,
+        isSuperAdmin,
         isPro,
+        loading,
         login,
         signUp,
         loginWithGoogle,
-        loginAsAdmin,
+        continueAsGuest,
         logout,
+        refreshUser,
         updateProfile,
         deductCredits,
         resetDailyCredits,
@@ -466,6 +569,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         requestPasswordReset,
         verifyResetCode,
         completePasswordReset,
+        directPasswordReset,
         sendVerificationEmail,
         verifyEmailCode,
         notifications,

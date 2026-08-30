@@ -33,7 +33,7 @@ export const DashboardView: React.FC = () => {
     loadTemplate,
     setActiveTab,
   } = useEditor();
-  const { user } = useAuth();
+  const { user, isAdmin } = useAuth();
 
   const handleCreateLandscape = () => {
     createProject({
@@ -70,7 +70,7 @@ export const DashboardView: React.FC = () => {
             Welcome back, {user?.name || "Creator"}!
           </h1>
           <p className="text-xs sm:text-sm text-slate-300 max-w-xl">
-            {user?.role === "SuperAdmin" || user?.email?.toLowerCase().trim() === "abdullah106556661@gmail.com" ? (
+            {isAdmin ? (
               <>
                 You have <span className="text-emerald-400 font-bold font-mono">Unlimited AI Credits (Admin)</span> and full access to 4K multi-track video editing.
               </>
@@ -108,7 +108,7 @@ export const DashboardView: React.FC = () => {
             <FolderOpen className="w-4 h-4 text-sky-400" />
           </div>
           <p className="text-2xl font-black text-white font-mono">{projects.length}</p>
-          <p className="text-[10px] text-slate-400">Synced to browser storage</p>
+          <p className="text-[10px] text-slate-400">Synced to cloud storage</p>
         </div>
 
         <div className="p-5 rounded-2xl bg-slate-900/80 border border-slate-800 space-y-2">
@@ -117,14 +117,10 @@ export const DashboardView: React.FC = () => {
             <Cpu className="w-4 h-4 text-purple-400" />
           </div>
           <p className="text-2xl font-black text-purple-300 font-mono">
-            {user?.role === "SuperAdmin" || user?.email?.toLowerCase().trim() === "abdullah106556661@gmail.com"
-              ? "Unlimited"
-              : `${user?.aiCreditsRemaining ?? 500} / 500`}
+            {isAdmin ? "Unlimited" : `${user?.aiCreditsRemaining ?? 500} / 500`}
           </p>
           <p className="text-[10px] text-slate-400">
-            {user?.role === "SuperAdmin" || user?.email?.toLowerCase().trim() === "abdullah106556661@gmail.com"
-              ? "SuperAdmin unrestricted access"
-              : "500 Daily credits reset every 24h"}
+            {isAdmin ? "SuperAdmin unrestricted access" : "500 Daily credits reset every 24h"}
           </p>
         </div>
 

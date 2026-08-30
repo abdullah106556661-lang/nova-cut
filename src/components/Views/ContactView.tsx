@@ -15,8 +15,8 @@ import { useAuth } from "../../context/AuthContext";
 export const ContactView: React.FC = () => {
   const { user, addNotification } = useAuth();
 
-  const [name, setName] = useState(user?.name || "Abdullah");
-  const [email, setEmail] = useState(user?.email || "abdullah106556661@gmail.com");
+  const [name, setName] = useState(user?.name || "");
+  const [email, setEmail] = useState(user?.email || "");
   const [subject, setSubject] = useState("Feature Request / Support Question");
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);

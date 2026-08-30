@@ -50,7 +50,7 @@ export const SignupView: React.FC = () => {
     setIsLoading(true);
     setErrorMsg(null);
     try {
-      await signUp(name, email);
+      await signUp(name.trim(), email.trim(), password);
       setActiveTab("dashboard");
     } catch (err: any) {
       setErrorMsg(err.message || "Failed to create account. Please try again.");

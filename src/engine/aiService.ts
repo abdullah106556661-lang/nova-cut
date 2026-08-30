@@ -1,3 +1,5 @@
+import { apiFetch, safeApiJson } from "../utils/api";
+
 export interface ScriptGenerationResult {
   title: string;
   hook: string;
@@ -29,16 +31,16 @@ export class AIService {
     tone: string;
     duration: string;
   }): Promise<ScriptGenerationResult> {
-    const res = await fetch("/api/ai/video-script", {
+    const res = await apiFetch("/api/ai/video-script", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(params),
     });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.error || "Failed to generate video script.");
+    const { ok, data, error } = await safeApiJson<ScriptGenerationResult>(res);
+    if (!ok || !data) {
+      throw new Error(error || "Failed to generate video script.");
     }
-    return res.json();
+    return data;
   }
 
   public static async generateAutoCaptions(params: {
@@ -46,37 +48,36 @@ export class AIService {
     videoDescription?: string;
     duration?: number;
   }): Promise<{ id: string; startTime: number; endTime: number; text: string }[]> {
-    const res = await fetch("/api/ai/auto-captions", {
+    const res = await apiFetch("/api/ai/auto-captions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(params),
     });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.error || "Failed to generate auto-captions.");
+    const { ok, data, error } = await safeApiJson<{ subtitles: any[] }>(res);
+    if (!ok) {
+      throw new Error(error || "Failed to generate auto-captions.");
     }
-    const data = await res.json();
-    return data.subtitles || [];
+    return data?.subtitles || [];
   }
 
   public static async generateVeoVideoPrompt(params: {
     idea: string;
     style?: string;
   }): Promise<VideoPromptResult> {
-    const res = await fetch("/api/ai/video-prompt", {
+    const res = await apiFetch("/api/ai/video-prompt", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(params),
     });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.error || "Failed to generate video prompt.");
+    const { ok, data, error } = await safeApiJson<VideoPromptResult>(res);
+    if (!ok || !data) {
+      throw new Error(error || "Failed to generate video prompt.");
     }
-    return res.json();
+    return data;
   }
 
   public static async chatWithCopilot(messages: { role: string; content: string }[]): Promise<string> {
-    const res = await fetch("/api/gemini/chat", {
+    const res = await apiFetch("/api/gemini/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -87,8 +88,11 @@ Keep replies practical, structured, and punchy.`,
         model: "gemini-3.7-flash",
       }),
     });
-    if (!res.ok) throw new Error("Failed to chat with AI Copilot");
-    const data = await res.json();
-    return data.text || "No response received.";
+    const { ok, data, error } = await safeApiJson<{ text?: string }>(res);
+    if (!ok) {
+      throw new Error(error || "Failed to chat with AI Copilot");
+    }
+    return data?.text || "No response received.";
   }
 }
+

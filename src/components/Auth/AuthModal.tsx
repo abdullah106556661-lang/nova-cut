@@ -1,14 +1,10 @@
 import React, { useState } from "react";
 import {
   X,
-  Sparkles,
   Lock,
   Mail,
   User,
-  ShieldCheck,
   CheckCircle2,
-  ArrowRight,
-  KeyRound,
   RefreshCw,
 } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
@@ -18,26 +14,25 @@ export const AuthModal: React.FC = () => {
     authModalOpen,
     setAuthModalOpen,
     authInitialTab,
-    setAuthInitialTab,
     login,
     signUp,
     loginWithGoogle,
+    continueAsGuest,
     requestPasswordReset,
     verifyResetCode,
     completePasswordReset,
     user,
     sendVerificationEmail,
     verifyEmailCode,
-    setJazzCashModalOpen,
   } = useAuth();
 
   const [activeTab, setActiveTab] = useState<"login" | "signup" | "forgot" | "verify" | "jazzcash">("login");
 
-  // Form Fields
+  // Form Fields - Clean state without hardcoded presets
   const [name, setName] = useState("");
-  const [email, setEmail] = useState("abdullah106556661@gmail.com");
-  const [password, setPassword] = useState("NovaCut2026!@#");
-  const [confirmPassword, setConfirmPassword] = useState("NovaCut2026!@#");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [agreeTerms, setAgreeTerms] = useState(true);
 
   // Forgot password steps: 1 = email, 2 = code, 3 = new pass, 4 = success
@@ -76,7 +71,7 @@ export const AuthModal: React.FC = () => {
         setLoading(false);
         return;
       }
-      await login(email, name || email.split("@")[0], password);
+      await login(email, password);
     } catch (err: any) {
       setError(err.message || "Failed to sign in");
     } finally {
@@ -87,6 +82,14 @@ export const AuthModal: React.FC = () => {
   const handleSignUpSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+    if (!name.trim()) {
+      setError("Please enter your name.");
+      return;
+    }
+    if (password.length < 6) {
+      setError("Password must be at least 6 characters long.");
+      return;
+    }
     if (password !== confirmPassword) {
       setError("Passwords do not match.");
       return;
@@ -110,9 +113,11 @@ export const AuthModal: React.FC = () => {
     setError(null);
     setLoading(true);
     try {
-      await requestPasswordReset(email);
-      setForgotStep(2);
-      setSuccessMsg(`Verification code sent to ${email}`);
+      const ok = await requestPasswordReset(email);
+      if (ok) {
+        setForgotStep(2);
+        setSuccessMsg(`If an account exists, a code was dispatched to ${email}`);
+      }
     } catch (err: any) {
       setError(err.message || "Could not send reset code");
     } finally {
@@ -120,34 +125,57 @@ export const AuthModal: React.FC = () => {
     }
   };
 
-  const handleVerifyResetCode = (e: React.FormEvent) => {
+  const handleVerifyResetCode = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
-    if (verifyResetCode(email, resetCode)) {
-      setForgotStep(3);
-    } else {
-      setError("Invalid 6-digit code. Please try again.");
+    setLoading(true);
+    try {
+      const isValid = await verifyResetCode(email, resetCode);
+      if (isValid) {
+        setForgotStep(3);
+      } else {
+        setError("Invalid or expired 6-digit code. Please try again.");
+      }
+    } catch {
+      setError("Failed to verify code. Please try again.");
+    } finally {
+      setLoading(false);
     }
   };
 
-  const handleCompleteReset = (e: React.FormEvent) => {
+  const handleCompleteReset = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     if (newPassword.length < 6) {
       setError("Password must be at least 6 characters long.");
       return;
     }
-    completePasswordReset(newPassword);
-    setForgotStep(4);
+    setLoading(true);
+    try {
+      const ok = await completePasswordReset(email, resetCode, newPassword);
+      if (ok) {
+        setForgotStep(4);
+      }
+    } catch (err: any) {
+      setError(err.message || "Failed to reset password.");
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const handleVerifyEmail = (e: React.FormEvent) => {
+  const handleVerifyEmail = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
-    if (verifyEmailCode(verifyCode)) {
-      setVerifySuccess(true);
-    } else {
-      setError("Invalid code. Please enter the 6-digit code sent to your email.");
+    setLoading(true);
+    try {
+      const ok = await verifyEmailCode(verifyCode);
+      if (ok) {
+        setVerifySuccess(true);
+      }
+    } catch (err: any) {
+      setError(err.message || "Invalid verification code.");
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -174,7 +202,7 @@ export const AuthModal: React.FC = () => {
           </div>
           <button
             onClick={() => setAuthModalOpen(false)}
-            className="text-slate-400 hover:text-slate-200 p-1.5 rounded-xl hover:bg-slate-800"
+            className="text-slate-400 hover:text-slate-200 p-1.5 rounded-xl hover:bg-slate-800 transition-colors"
           >
             <X className="w-5 h-5" />
           </button>
@@ -203,8 +231,9 @@ export const AuthModal: React.FC = () => {
             <div className="space-y-4">
               {/* Google 1-Click Sign-in */}
               <button
-                onClick={loginWithGoogle}
-                className="w-full py-2.5 bg-white hover:bg-slate-100 text-slate-900 font-bold rounded-xl shadow-md transition-all flex items-center justify-center gap-2.5 text-xs"
+                type="button"
+                onClick={() => loginWithGoogle()}
+                className="w-full py-2.5 bg-white hover:bg-slate-100 text-slate-900 font-bold rounded-xl shadow-md transition-all flex items-center justify-center gap-2.5 text-xs cursor-pointer"
               >
                 <svg className="w-4 h-4" viewBox="0 0 24 24">
                   <path
@@ -286,6 +315,7 @@ export const AuthModal: React.FC = () => {
               <div className="text-center pt-2 border-t border-slate-800/80">
                 <span className="text-slate-400">Don't have an account? </span>
                 <button
+                  type="button"
                   onClick={() => setActiveTab("signup")}
                   className="text-sky-400 font-bold hover:underline"
                 >
@@ -299,8 +329,9 @@ export const AuthModal: React.FC = () => {
           {activeTab === "signup" && (
             <div className="space-y-4">
               <button
-                onClick={loginWithGoogle}
-                className="w-full py-2.5 bg-white hover:bg-slate-100 text-slate-900 font-bold rounded-xl shadow-md transition-all flex items-center justify-center gap-2.5 text-xs"
+                type="button"
+                onClick={() => loginWithGoogle()}
+                className="w-full py-2.5 bg-white hover:bg-slate-100 text-slate-900 font-bold rounded-xl shadow-md transition-all flex items-center justify-center gap-2.5 text-xs cursor-pointer"
               >
                 <svg className="w-4 h-4" viewBox="0 0 24 24">
                   <path
@@ -339,7 +370,7 @@ export const AuthModal: React.FC = () => {
                       required
                       value={name}
                       onChange={(e) => setName(e.target.value)}
-                      placeholder="Alex Vance"
+                      placeholder="Your Name"
                       className="w-full bg-slate-950 border border-slate-700/80 rounded-xl pl-9 pr-3 py-2 text-slate-200 outline-none focus:border-sky-500 text-xs"
                     />
                   </div>
@@ -354,7 +385,7 @@ export const AuthModal: React.FC = () => {
                       required
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
-                      placeholder="alex@creator.studio"
+                      placeholder="you@example.com"
                       className="w-full bg-slate-950 border border-slate-700/80 rounded-xl pl-9 pr-3 py-2 text-slate-200 outline-none focus:border-sky-500 text-xs"
                     />
                   </div>
@@ -393,14 +424,14 @@ export const AuthModal: React.FC = () => {
                     className="mt-0.5 rounded bg-slate-950 border-slate-700 text-sky-500 focus:ring-0"
                   />
                   <span>
-                    I agree to the Terms of Service, Privacy Policy & acceptable AI use policies.
+                    I agree to the Terms of Service & Privacy Policy.
                   </span>
                 </label>
 
                 <button
                   type="submit"
                   disabled={loading}
-                  className="w-full py-2.5 bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 text-white font-bold rounded-xl shadow-lg shadow-sky-500/25 transition-all text-xs flex items-center justify-center gap-2"
+                  className="w-full py-2.5 bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 text-white font-bold rounded-xl shadow-lg shadow-sky-500/25 transition-all text-xs flex items-center justify-center gap-2 cursor-pointer"
                 >
                   {loading && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
                   <span>Create Free Account</span>
@@ -410,6 +441,7 @@ export const AuthModal: React.FC = () => {
               <div className="text-center pt-2 border-t border-slate-800/80">
                 <span className="text-slate-400">Already have an account? </span>
                 <button
+                  type="button"
                   onClick={() => setActiveTab("login")}
                   className="text-sky-400 font-bold hover:underline"
                 >
@@ -480,7 +512,7 @@ export const AuthModal: React.FC = () => {
               {forgotStep === 3 && (
                 <form onSubmit={handleCompleteReset} className="space-y-3">
                   <p className="text-slate-400 leading-relaxed">
-                    Choose a strong, new password for your account.
+                    Choose a strong new password for your account.
                   </p>
                   <div>
                     <label className="text-slate-300 block mb-1 font-semibold">New Password</label>
@@ -513,6 +545,7 @@ export const AuthModal: React.FC = () => {
                     Your password has been changed. You may now sign in.
                   </p>
                   <button
+                    type="button"
                     onClick={() => setActiveTab("login")}
                     className="px-6 py-2 bg-sky-500 hover:bg-sky-400 text-white font-bold rounded-xl"
                   >
@@ -523,6 +556,7 @@ export const AuthModal: React.FC = () => {
 
               <div className="text-center pt-2 border-t border-slate-800">
                 <button
+                  type="button"
                   onClick={() => setActiveTab("login")}
                   className="text-slate-400 hover:text-white"
                 >
@@ -543,6 +577,7 @@ export const AuthModal: React.FC = () => {
                     Your email address is confirmed. You have unlocked unlimited exports and cloud syncing.
                   </p>
                   <button
+                    type="button"
                     onClick={() => setAuthModalOpen(false)}
                     className="px-6 py-2 bg-sky-500 hover:bg-sky-400 text-white font-bold rounded-xl"
                   >
@@ -571,13 +606,13 @@ export const AuthModal: React.FC = () => {
                     <button
                       type="button"
                       onClick={() => sendVerificationEmail()}
-                      className="px-3 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold rounded-xl text-xs flex-1"
+                      className="px-3 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold rounded-xl text-xs flex-1 cursor-pointer"
                     >
                       Resend Code
                     </button>
                     <button
                       type="submit"
-                      className="px-3 py-2.5 bg-sky-500 hover:bg-sky-400 text-white font-bold rounded-xl text-xs flex-1"
+                      className="px-3 py-2.5 bg-sky-500 hover:bg-sky-400 text-white font-bold rounded-xl text-xs flex-1 cursor-pointer"
                     >
                       Confirm Email
                     </button>
