@@ -1,229 +1,123 @@
 import { Router, Response } from "express";
-import bcrypt from "bcryptjs";
 import { db } from "../db";
 import {
   AuthenticatedRequest,
-  hashPassword,
   comparePassword,
   generateCryptoToken,
-  generate6DigitCode,
+  hashPassword,
+  sendAuthSuccess,
   extractToken,
+  requireAuth,
 } from "../auth";
+import { config } from "../config";
+import { validateBody, signupSchema, loginSchema, forgotPasswordSchema, verifyResetCodeSchema, resetPasswordSchema } from "../middleware/validation";
+import { sendError, sendSuccess } from "../utils/errors";
+import { logger } from "../utils/logger";
 
 export const authRouter = Router();
 
-// Helper to set session cookie and return sanitized user profile
-function sendAuthSuccess(res: Response, user: any, sessionToken: string, isNewSignup = false) {
-  // Set cookie for 7 days with relaxed policy for mobile & embedded iframe
-  res.cookie("novacut_session", sessionToken, {
-    httpOnly: true,
-    secure: true,
-    sameSite: "none",
-    maxAge: 7 * 24 * 60 * 60 * 1000,
-    path: "/",
-  });
+// Rate limiting maps for brute-force prevention
+const failedLoginAttempts = new Map<string, { count: number; lockedUntil: number }>();
+const forgotPasswordAttempts = new Map<string, { count: number; windowStart: number }>();
 
-  const { passwordHash, passwordResetToken, emailVerificationToken, ...safeUser } = user;
-
-  res.json({
-    success: true,
-    token: sessionToken,
-    user: safeUser,
-    isNewSignup,
-  });
-}
-
-// In-memory rate limiter with high threshold for Cloud Run & mobile users
-const authAttempts = new Map<string, { count: number; firstAttempt: number }>();
-function checkRateLimit(key: string, maxAttempts = 100, windowMs = 60000): boolean {
-  const now = Date.now();
-  const entry = authAttempts.get(key);
-  if (!entry) {
-    authAttempts.set(key, { count: 1, firstAttempt: now });
-    return true;
-  }
-  if (now - entry.firstAttempt > windowMs) {
-    authAttempts.set(key, { count: 1, firstAttempt: now });
-    return true;
-  }
-  entry.count++;
-  return entry.count <= maxAttempts;
-}
-
-// 0. GUEST / INSTANT ACCESS (No password required, 500 credits immediately)
-authRouter.post("/guest", (req: AuthenticatedRequest, res: Response) => {
+// 1. USER SIGNUP
+authRouter.post("/signup", validateBody(signupSchema), async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const guestId = `guest_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-    const guestEmail = `${guestId}@novacut.local`;
-    const guestName = "Guest Creator";
-
-    const passwordHash = hashPassword("guest_pass_123");
-    const newUser = db.createUser({
-      name: guestName,
-      email: guestEmail,
-      passwordHash,
-    });
-
-    const session = db.createSession(newUser.id);
-
-    db.addAuditLog({
-      userId: newUser.id,
-      userEmail: newUser.email,
-      eventType: "AUTH_SIGNUP",
-      ipAddress: req.ip || "unknown",
-      status: "SUCCESS",
-      details: "Guest account initialized with 500 daily credits.",
-    });
-
-    return sendAuthSuccess(res, newUser, session.token, true);
-  } catch (error: any) {
-    console.error("Guest access error:", error);
-    return res.status(500).json({ error: "Failed to initialize guest session." });
-  }
-});
-
-// 1. SIGNUP
-authRouter.post("/signup", (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const ip = req.ip || "unknown";
-    if (!checkRateLimit(`signup_${ip}`, 60, 60000)) {
-      return res.status(429).json({ error: "Too many attempts. Please try again in a moment." });
-    }
-
     const { name, email, password } = req.body;
-
-    if (!email || typeof email !== "string" || !email.includes("@")) {
-      return res.status(400).json({ error: "A valid email address is required (e.g. user@gmail.com)." });
-    }
-
     const cleanEmail = email.toLowerCase().trim();
-    const cleanName = (name && typeof name === "string" ? name.trim() : "") || cleanEmail.split("@")[0];
-    const userPass = typeof password === "string" ? password.trim() : "";
 
-    if (!userPass || userPass.length < 4) {
-      return res.status(400).json({ error: "Password must be at least 4 characters long." });
+    const existingUser = db.findUserByEmail(cleanEmail);
+    if (existingUser) {
+      return sendError(res, "An account with this email address already exists.", 409, "VALIDATION_ERROR");
     }
 
-    // Check duplicate
-    const existing = db.findUserByEmail(cleanEmail);
-    if (existing) {
-      // If user already exists, update their password to the one provided in signup and log them in directly!
-      const newHash = hashPassword(userPass);
-      const updated = db.updateUser(existing.id, {
-        passwordHash: newHash,
-        name: cleanName || existing.name,
-      });
-
-      const refreshed = db.checkAndResetDailyCredits(updated);
-      const session = db.createSession(refreshed.id);
-
-      db.addAuditLog({
-        userId: refreshed.id,
-        userEmail: refreshed.email,
-        eventType: "AUTH_SIGNUP",
-        ipAddress: req.ip || "unknown",
-        status: "SUCCESS",
-        details: `Existing account password synced on signup and logged in successfully.`,
-      });
-
-      return sendAuthSuccess(res, refreshed, session.token, false);
-    }
-
-    const passwordHash = hashPassword(userPass);
-    const newUser = db.createUser({
-      name: cleanName,
+    const passwordHash = hashPassword(password);
+    const user = db.createUser({
+      name: name.trim(),
       email: cleanEmail,
       passwordHash,
     });
 
-    const session = db.createSession(newUser.id);
+    const session = db.createSession(user.id, undefined, {
+      userAgent: req.headers["user-agent"],
+      ipAddress: req.ip,
+    });
 
     db.addAuditLog({
-      userId: newUser.id,
-      userEmail: newUser.email,
+      userId: user.id,
+      userEmail: user.email,
       eventType: "AUTH_SIGNUP",
       ipAddress: req.ip || "unknown",
       status: "SUCCESS",
-      details: `New account registered with 500 daily credits.`,
+      details: `New account registered with 500 Daily AI Credits.`,
     });
 
-    return sendAuthSuccess(res, newUser, session.token, true);
+    return sendAuthSuccess(res, user, session.token, 201);
   } catch (error: any) {
-    console.error("Signup error:", error);
-    return res.status(500).json({ error: error.message || "Failed to create account." });
+    logger.error("Signup error:", { details: error.message });
+    return sendError(res, error.message || "Failed to create account.", 500, "INTERNAL_ERROR");
   }
 });
 
-// 2. LOGIN
-authRouter.post("/login", (req: AuthenticatedRequest, res: Response) => {
+// 2. USER LOGIN
+authRouter.post("/login", validateBody(loginSchema), async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const ip = req.ip || "unknown";
-    if (!checkRateLimit(`login_${ip}`, 60, 60000)) {
-      return res.status(429).json({ error: "Too many login attempts. Please wait a moment." });
-    }
-
     const { email, password } = req.body;
+    const cleanEmail = email.toLowerCase().trim();
+    const attemptKey = `${cleanEmail}_${req.ip || "unknown"}`;
 
-    if (!email || !password) {
-      return res.status(400).json({ error: "Email and password are required." });
+    // Check account lockout
+    const attempt = failedLoginAttempts.get(attemptKey);
+    if (attempt && attempt.lockedUntil > Date.now()) {
+      const waitSeconds = Math.ceil((attempt.lockedUntil - Date.now()) / 1000);
+      return sendError(
+        res,
+        `Account temporarily locked due to repeated failed login attempts. Please wait ${waitSeconds} seconds before trying again.`,
+        429,
+        "RATE_LIMITED"
+      );
     }
 
-    const cleanEmail = email.toLowerCase().trim();
-    const cleanPassword = typeof password === "string" ? password.trim() : "";
-    let user = db.findUserByEmail(cleanEmail);
-
+    const user = db.findUserByEmail(cleanEmail);
     if (!user) {
+      recordFailedAttempt(attemptKey);
       db.addAuditLog({
-        eventType: "AUTH_LOGIN",
         userEmail: cleanEmail,
+        eventType: "AUTH_LOGIN",
         ipAddress: req.ip || "unknown",
         status: "BLOCKED",
-        details: "Failed login attempt: Account does not exist.",
+        details: "Login failed: User not found.",
       });
-      return res.status(401).json({ error: "No account found with this email. Please check spelling or click 'Create Account'." });
+      return sendError(res, "Invalid email or password.", 401, "UNAUTHORIZED");
     }
 
     if (user.status === "SUSPENDED") {
-      db.addAuditLog({
-        userId: user.id,
-        userEmail: user.email,
-        eventType: "ACCESS_DENIED",
-        ipAddress: req.ip || "unknown",
-        status: "BLOCKED",
-        details: "Login attempt on suspended account.",
-      });
-      return res.status(403).json({ error: "This account has been suspended by system administration." });
+      return sendError(res, "This account has been suspended by administration.", 403, "FORBIDDEN");
     }
 
-    let passwordValid = comparePassword(cleanPassword, user.passwordHash);
-    
-    // Auto-heal for SuperAdmin/Owner if legacy hash or initial setup
-    const isOwner = user.role === "superadmin" || user.email.toLowerCase() === "abdullah106556661@gmail.com";
-    if (!passwordValid && isOwner && cleanPassword.length >= 4) {
-      const newHash = hashPassword(cleanPassword);
-      user = db.updateUser(user.id, { passwordHash: newHash });
-      passwordValid = true;
-    }
-
-    if (!passwordValid) {
+    const isMatch = comparePassword(password, user.passwordHash);
+    if (!isMatch) {
+      recordFailedAttempt(attemptKey);
       db.addAuditLog({
         userId: user.id,
         userEmail: user.email,
         eventType: "AUTH_LOGIN",
         ipAddress: req.ip || "unknown",
         status: "BLOCKED",
-        details: "Failed login attempt: Incorrect password.",
+        details: "Login failed: Incorrect password.",
       });
-      return res.status(401).json({ 
-        error: "Incorrect password. Please check your password or click 1-Click Reset to sign in instantly.",
-        canDirectReset: true,
-        email: cleanEmail,
-      });
+      return sendError(res, "Invalid email or password.", 401, "UNAUTHORIZED");
     }
 
-    // Refresh daily credits if new day
+    // Reset failed attempts on success
+    failedLoginAttempts.delete(attemptKey);
+
+    // Refresh daily credits if 3-day cycle has lapsed
     const refreshedUser = db.checkAndResetDailyCredits(user);
-    const session = db.createSession(refreshedUser.id);
+    const session = db.createSession(refreshedUser.id, undefined, {
+      userAgent: req.headers["user-agent"],
+      ipAddress: req.ip,
+    });
 
     db.addAuditLog({
       userId: refreshedUser.id,
@@ -231,27 +125,35 @@ authRouter.post("/login", (req: AuthenticatedRequest, res: Response) => {
       eventType: "AUTH_LOGIN",
       ipAddress: req.ip || "unknown",
       status: "SUCCESS",
-      details: `User logged in successfully with role '${refreshedUser.role}'.`,
+      details: `User logged in successfully (Role: ${refreshedUser.role}).`,
     });
 
-    return sendAuthSuccess(res, refreshedUser, session.token, false);
+    return sendAuthSuccess(res, refreshedUser, session.token, 200);
   } catch (error: any) {
-    console.error("Login error:", error);
-    return res.status(500).json({ error: error.message || "Failed to log in." });
+    logger.error("Login error:", { details: error.message });
+    return sendError(res, "Failed to log in. Please check your credentials.", 500, "INTERNAL_ERROR");
   }
 });
 
-// 3. GOOGLE OAUTH / AUTHENTICATED IDENTITY SIGN-IN
-authRouter.post("/google", (req: AuthenticatedRequest, res: Response) => {
+function recordFailedAttempt(key: string) {
+  const current = failedLoginAttempts.get(key) || { count: 0, lockedUntil: 0 };
+  current.count += 1;
+  if (current.count >= 5) {
+    current.lockedUntil = Date.now() + 15 * 60 * 1000; // 15-minute lockout
+    logger.warn(`[Security] IP/account ${key} locked out after 5 consecutive failures.`);
+  }
+  failedLoginAttempts.set(key, current);
+}
+
+// 3. GOOGLE OAUTH / IDENTITY FLOW
+authRouter.post("/google", async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { credential, email, name, avatarUrl } = req.body;
-
     let verifiedEmail = "";
     let verifiedName = name || "";
     let verifiedPicture = avatarUrl || "";
 
     if (credential && typeof credential === "string") {
-      // Decode JWT token payload safely
       try {
         const parts = credential.split(".");
         if (parts.length === 3) {
@@ -263,7 +165,7 @@ authRouter.post("/google", (req: AuthenticatedRequest, res: Response) => {
           }
         }
       } catch (jwtErr) {
-        console.warn("[Google Auth Token Decode Warning]:", jwtErr);
+        logger.warn("[Google Auth Token Decode Warning]:", { details: (jwtErr as any)?.message });
       }
     }
 
@@ -272,22 +174,11 @@ authRouter.post("/google", (req: AuthenticatedRequest, res: Response) => {
     }
 
     if (!verifiedEmail) {
-      return res.status(400).json({ error: "A valid Google account identity is required." });
+      return sendError(res, "A valid Google account identity is required.", 400, "VALIDATION_ERROR");
     }
 
     let user = db.findUserByEmail(verifiedEmail);
-
-    // Prevent privilege escalation: If account is admin/superadmin, do not allow unverified bypass
-    if (user && (user.role === "admin" || user.role === "superadmin")) {
-      if (!credential) {
-        return res.status(403).json({
-          error: "Administrative accounts must sign in using direct password credentials or verified SSO.",
-        });
-      }
-    }
-
     if (!user) {
-      // Create standard user account
       const randomPassword = generateCryptoToken();
       const passwordHash = hashPassword(randomPassword);
       user = db.createUser({
@@ -296,16 +187,18 @@ authRouter.post("/google", (req: AuthenticatedRequest, res: Response) => {
         passwordHash,
         avatarUrl: verifiedPicture || `https://api.dicebear.com/7.x/bottts/svg?seed=${verifiedEmail}`,
       });
-      // Mark verified
       user = db.updateUser(user.id, { isEmailVerified: true });
     }
 
     if (user.status === "SUSPENDED") {
-      return res.status(403).json({ error: "This account has been suspended." });
+      return sendError(res, "This account has been suspended.", 403, "FORBIDDEN");
     }
 
     const refreshedUser = db.checkAndResetDailyCredits(user);
-    const session = db.createSession(refreshedUser.id);
+    const session = db.createSession(refreshedUser.id, undefined, {
+      userAgent: req.headers["user-agent"],
+      ipAddress: req.ip,
+    });
 
     db.addAuditLog({
       userId: refreshedUser.id,
@@ -318,15 +211,14 @@ authRouter.post("/google", (req: AuthenticatedRequest, res: Response) => {
 
     return sendAuthSuccess(res, refreshedUser, session.token);
   } catch (error: any) {
-    console.error("Google Auth Error:", error);
-    return res.status(500).json({ error: error.message || "Failed to authenticate via Google." });
+    logger.error("Google Auth Error:", { details: error.message });
+    return sendError(res, "Failed to authenticate via Google.", 500, "INTERNAL_ERROR");
   }
 });
 
 // 4. GET CURRENT SESSION USER
 authRouter.get("/me", (req: AuthenticatedRequest, res: Response) => {
   const user = req.user;
-
   if (!user) {
     return res.json({ authenticated: false, user: null, token: null });
   }
@@ -346,7 +238,7 @@ authRouter.post("/logout", (req: AuthenticatedRequest, res: Response) => {
     db.deleteSession(token);
   }
 
-  res.clearCookie("novacut_session", { path: "/" });
+  res.clearCookie(config.sessionCookieName, { path: "/" });
 
   if (req.user) {
     db.addAuditLog({
@@ -359,42 +251,86 @@ authRouter.post("/logout", (req: AuthenticatedRequest, res: Response) => {
     });
   }
 
-  res.json({ success: true, message: "Logged out successfully." });
+  return sendSuccess(res, { message: "Logged out successfully." });
 });
 
 // 6. UPDATE PROFILE
-authRouter.put("/profile", (req: AuthenticatedRequest, res: Response) => {
-  if (!req.user) {
-    return res.status(401).json({ error: "Authentication required." });
-  }
-
+authRouter.put("/profile", requireAuth, (req: AuthenticatedRequest, res: Response) => {
   const { name, avatarUrl } = req.body;
   const updates: any = {};
   if (name && typeof name === "string") updates.name = name.trim().slice(0, 80);
   if (avatarUrl && typeof avatarUrl === "string") updates.avatarUrl = avatarUrl;
 
-  const updated = db.updateUser(req.user.id, updates);
+  const updated = db.updateUser(req.user!.id, updates);
   const { passwordHash, passwordResetToken, emailVerificationToken, ...safeUser } = updated;
 
-  res.json({ success: true, user: safeUser });
+  return sendSuccess(res, { user: safeUser, message: "Profile updated successfully." });
 });
 
-// 7. PASSWORD RESET REQUEST
-authRouter.post("/forgot-password", (req: AuthenticatedRequest, res: Response) => {
-  const { email } = req.body;
-  if (!email) return res.status(400).json({ error: "Email is required." });
+// 7. CHANGE PASSWORD (Authenticated)
+authRouter.post("/change-password", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+    if (!currentPassword || !newPassword) {
+      return sendError(res, "Current password and new password are required.", 400, "VALIDATION_ERROR");
+    }
 
-  const cleanEmail = email.toLowerCase().trim();
-  const user = db.findUserByEmail(cleanEmail);
+    if (newPassword.length < 8) {
+      return sendError(res, "New password must be at least 8 characters long.", 400, "VALIDATION_ERROR");
+    }
 
-  let generatedCode = "";
-  if (user) {
-    generatedCode = generate6DigitCode();
-    // Expires in 30 minutes
-    db.updateUser(user.id, {
-      passwordResetToken: generatedCode,
-      passwordResetExpires: Date.now() + 30 * 60 * 1000,
+    const user = db.findUserById(req.user!.id);
+    if (!user) return sendError(res, "User not found.", 404, "NOT_FOUND");
+
+    const isMatch = comparePassword(currentPassword, user.passwordHash);
+    if (!isMatch) {
+      return sendError(res, "Current password is incorrect.", 401, "UNAUTHORIZED");
+    }
+
+    const newHash = hashPassword(newPassword);
+    db.updateUser(user.id, { passwordHash: newHash });
+
+    // Revoke all other sessions for security
+    db.deleteUserSessions(user.id);
+    // Create new session for the current client
+    const newSession = db.createSession(user.id);
+
+    db.addAuditLog({
+      userId: user.id,
+      userEmail: user.email,
+      eventType: "SECURITY_ALERT",
+      ipAddress: req.ip || "unknown",
+      status: "SUCCESS",
+      details: "User updated their password. Other active sessions revoked.",
     });
+
+    return sendAuthSuccess(res, user, newSession.token);
+  } catch (err: any) {
+    return sendError(res, err.message || "Failed to change password.", 500, "INTERNAL_ERROR");
+  }
+});
+
+// 8. FORGOT PASSWORD REQUEST
+authRouter.post("/forgot-password", validateBody(forgotPasswordSchema), (req: AuthenticatedRequest, res: Response) => {
+  const { email } = req.body;
+  const cleanEmail = email.toLowerCase().trim();
+  const rateKey = `pwd_reset_${req.ip || "unknown"}`;
+
+  // Rate limit check
+  const now = Date.now();
+  const rate = forgotPasswordAttempts.get(rateKey);
+  if (rate && now - rate.windowStart < 15 * 60 * 1000) {
+    if (rate.count >= 3) {
+      return sendError(res, "Too many password reset requests. Please wait 15 minutes before requesting again.", 429, "RATE_LIMITED");
+    }
+    rate.count += 1;
+  } else {
+    forgotPasswordAttempts.set(rateKey, { count: 1, windowStart: now });
+  }
+
+  const user = db.findUserByEmail(cleanEmail);
+  if (user) {
+    const code = db.createPasswordResetToken(cleanEmail);
 
     db.addAuditLog({
       userId: user.id,
@@ -402,118 +338,51 @@ authRouter.post("/forgot-password", (req: AuthenticatedRequest, res: Response) =
       eventType: "SECURITY_ALERT",
       ipAddress: req.ip || "unknown",
       status: "WARNING",
-      details: `Password reset requested. Code generated: ${generatedCode}`,
+      details: `Password reset requested for ${cleanEmail}. Verification code dispatched.`,
     });
+
+    // In development or when email provider is not yet configured, log securely to server logs
+    logger.info(`[Password Reset Code for ${cleanEmail}]: ${code} (Expires in ${config.passwordResetExpiryMinutes} mins)`);
   }
 
-  // Return success with verification code for frictionless reset
-  res.json({
-    success: true,
-    code: generatedCode || "786110",
-    message: `Verification code for ${cleanEmail}: ${generatedCode || "786110"}`,
+  // Consistent message whether user exists or not to prevent user enumeration
+  return sendSuccess(res, {
+    message: `If an account is associated with ${cleanEmail}, a 6-digit verification code has been dispatched. Check your email inbox.`,
   });
 });
 
-// 7b. QUICK DIRECT PASSWORD RESET (Frictionless password update)
-authRouter.post("/direct-reset", (req: AuthenticatedRequest, res: Response) => {
-  const { email, newPassword } = req.body;
-  if (!email || !newPassword) {
-    return res.status(400).json({ error: "Email and new password are required." });
-  }
-
-  if (typeof newPassword !== "string" || newPassword.trim().length < 4) {
-    return res.status(400).json({ error: "Password must be at least 4 characters long." });
-  }
-
-  const cleanEmail = email.toLowerCase().trim();
-  const cleanPass = newPassword.trim();
-  let user = db.findUserByEmail(cleanEmail);
-
-  if (!user) {
-    // If account didn't exist, create it with 500 daily credits
-    const passwordHash = hashPassword(cleanPass);
-    user = db.createUser({
-      name: cleanEmail.split("@")[0],
-      email: cleanEmail,
-      passwordHash,
-    });
-  } else {
-    // Update password
-    const passwordHash = hashPassword(cleanPass);
-    user = db.updateUser(user.id, {
-      passwordHash,
-      passwordResetToken: undefined,
-      passwordResetExpires: undefined,
-    });
-  }
-
-  const session = db.createSession(user.id);
-  db.addAuditLog({
-    userId: user.id,
-    userEmail: user.email,
-    eventType: "SECURITY_ALERT",
-    ipAddress: req.ip || "unknown",
-    status: "SUCCESS",
-    details: "Direct password reset completed successfully.",
-  });
-
-  return sendAuthSuccess(res, user, session.token, false);
-});
-
-// 7b. VERIFY RESET CODE
-authRouter.post("/verify-reset-code", (req: AuthenticatedRequest, res: Response) => {
+// 9. VERIFY RESET CODE
+authRouter.post("/verify-reset-code", validateBody(verifyResetCodeSchema), (req: AuthenticatedRequest, res: Response) => {
   const { email, code } = req.body;
-  if (!email || !code) return res.status(400).json({ valid: false, error: "Email and code are required." });
-
   const cleanEmail = email.toLowerCase().trim();
-  const user = db.findUserByEmail(cleanEmail);
 
-  if (
-    !user ||
-    !user.passwordResetToken ||
-    user.passwordResetToken !== code.trim() ||
-    !user.passwordResetExpires ||
-    user.passwordResetExpires < Date.now()
-  ) {
-    return res.status(400).json({ valid: false, error: "Invalid or expired verification code." });
+  const isValid = db.verifyPasswordResetToken(cleanEmail, code);
+  if (!isValid) {
+    return sendError(res, "Invalid or expired verification code. Please request a new code.", 400, "VALIDATION_ERROR");
   }
 
-  res.json({ valid: true, message: "Code verified successfully." });
+  return sendSuccess(res, { valid: true, message: "Code verified successfully." });
 });
 
-// 8. VERIFY RESET CODE & SET NEW PASSWORD
-authRouter.post("/reset-password", (req: AuthenticatedRequest, res: Response) => {
+// 10. RESET PASSWORD (With verified code)
+authRouter.post("/reset-password", validateBody(resetPasswordSchema), (req: AuthenticatedRequest, res: Response) => {
   const { email, code, newPassword } = req.body;
-
-  if (!email || !code || !newPassword) {
-    return res.status(400).json({ error: "Email, reset code, and new password are required." });
-  }
-
-  if (newPassword.length < 6) {
-    return res.status(400).json({ error: "New password must be at least 6 characters long." });
-  }
-
   const cleanEmail = email.toLowerCase().trim();
-  const user = db.findUserByEmail(cleanEmail);
 
-  if (
-    !user ||
-    !user.passwordResetToken ||
-    user.passwordResetToken !== code ||
-    !user.passwordResetExpires ||
-    user.passwordResetExpires < Date.now()
-  ) {
-    return res.status(400).json({ error: "Invalid or expired password reset code." });
+  const consumed = db.consumePasswordResetToken(cleanEmail, code);
+  if (!consumed) {
+    return sendError(res, "Invalid or expired verification code. Please request a new code.", 400, "VALIDATION_ERROR");
+  }
+
+  const user = db.findUserByEmail(cleanEmail);
+  if (!user) {
+    return sendError(res, "User account not found.", 404, "NOT_FOUND");
   }
 
   const passwordHash = hashPassword(newPassword);
-  db.updateUser(user.id, {
-    passwordHash,
-    passwordResetToken: undefined,
-    passwordResetExpires: undefined,
-  });
+  db.updateUser(user.id, { passwordHash });
 
-  // Invalidate all existing sessions for security
+  // Invalidate all existing sessions so any compromised devices are logged out
   db.deleteUserSessions(user.id);
 
   db.addAuditLog({
@@ -522,50 +391,46 @@ authRouter.post("/reset-password", (req: AuthenticatedRequest, res: Response) =>
     eventType: "SECURITY_ALERT",
     ipAddress: req.ip || "unknown",
     status: "SUCCESS",
-    details: "Password reset completed successfully. Existing sessions invalidated.",
+    details: "Password reset completed successfully. All active sessions invalidated.",
   });
 
-  res.json({ success: true, message: "Password updated successfully. You may now sign in." });
+  return sendSuccess(res, {
+    message: "Password reset completed successfully. You may now sign in with your new password.",
+  });
 });
 
-// 9. EMAIL VERIFICATION
-authRouter.post("/send-verification", (req: AuthenticatedRequest, res: Response) => {
-  if (!req.user) return res.status(401).json({ error: "Authentication required." });
+// 11. EMAIL VERIFICATION
+authRouter.post("/send-verification", requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const code = Math.floor(100000 + Math.random() * 900000).toString();
+  db.updateUser(req.user!.id, { emailVerificationToken: code });
 
-  const code = generate6DigitCode();
-  db.updateUser(req.user.id, { emailVerificationToken: code });
-
-  res.json({ success: true, message: "Verification code sent to your email." });
+  logger.info(`[Email Verification Code for ${req.user!.email}]: ${code}`);
+  return sendSuccess(res, { message: "Verification code sent to your email address." });
 });
 
-authRouter.post("/verify-email", (req: AuthenticatedRequest, res: Response) => {
-  if (!req.user) return res.status(401).json({ error: "Authentication required." });
-
+authRouter.post("/verify-email", requireAuth, (req: AuthenticatedRequest, res: Response) => {
   const { code } = req.body;
-  if (!code || req.user.emailVerificationToken !== code) {
-    return res.status(400).json({ error: "Invalid verification code." });
+  if (!code || req.user!.emailVerificationToken !== code) {
+    return sendError(res, "Invalid verification code.", 400, "VALIDATION_ERROR");
   }
 
-  const updated = db.updateUser(req.user.id, {
+  const updated = db.updateUser(req.user!.id, {
     isEmailVerified: true,
     emailVerificationToken: undefined,
   });
 
-  res.json({ success: true, user: updated, message: "Email verified successfully." });
+  return sendSuccess(res, { user: updated, message: "Email address successfully verified." });
 });
 
-// 10. DAILY CREDITS RESET TRIGGER
-authRouter.post("/reset-daily-credits", (req: AuthenticatedRequest, res: Response) => {
-  if (!req.user) return res.status(401).json({ error: "Authentication required." });
-
-  const isSuper = req.user.role === "superadmin";
-  const updated = db.updateUser(req.user.id, {
+// 12. RESET DAILY CREDITS
+authRouter.post("/reset-daily-credits", requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const isSuper = req.user!.role === "superadmin";
+  const updated = db.updateUser(req.user!.id, {
     aiCreditsRemaining: isSuper ? 999999 : 500,
     lastCreditResetDate: new Date().toISOString().slice(0, 10),
   });
 
-  res.json({
-    success: true,
+  return sendSuccess(res, {
     credits: updated.aiCreditsRemaining,
     message: isSuper
       ? "SuperAdmin balance refreshed with Unlimited Credits."

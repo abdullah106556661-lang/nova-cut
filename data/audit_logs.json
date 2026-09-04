@@ -1,0 +1,32 @@
+[
+  {
+    "id": "log_4dcffd96-8a25-40dd-aef2-0934d7c4906e",
+    "timestamp": "2026-09-04T19:09:33.069Z",
+    "userId": "usr_superadmin_057f896c",
+    "userEmail": "abdullah106556661@gmail.com",
+    "eventType": "AUTH_LOGIN",
+    "ipAddress": "127.0.0.1",
+    "status": "SUCCESS",
+    "details": "User logged in successfully (Role: superadmin)."
+  },
+  {
+    "id": "log_1c3d8851-4821-4dcb-8f08-4ce44164e976",
+    "timestamp": "2026-09-04T19:09:30.015Z",
+    "userId": "usr_superadmin_057f896c",
+    "userEmail": "abdullah106556661@gmail.com",
+    "eventType": "AUTH_LOGIN",
+    "ipAddress": "127.0.0.1",
+    "status": "BLOCKED",
+    "details": "Login failed: Incorrect password."
+  },
+  {
+    "id": "log_84900e88-7c2f-48d2-8a90-161628250cfa",
+    "timestamp": "2026-09-04T18:46:39.767Z",
+    "userId": "usr_superadmin_057f896c",
+    "userEmail": "abdullah106556661@gmail.com",
+    "eventType": "AUTH_LOGIN",
+    "ipAddress": "127.0.0.1",
+    "status": "SUCCESS",
+    "details": "User logged in successfully with role 'superadmin'."
+  }
+]

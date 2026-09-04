@@ -118,6 +118,10 @@ interface EditorContextType {
   // Canvas Safe Zone & Viewport
   showSafeZone: boolean;
   setShowSafeZone: (show: boolean) => void;
+
+  // Auto-save confirmation indicator
+  isAutoSaved: boolean;
+  triggerAutoSaveToast: () => void;
 }
 
 const STORAGE_ACTIVE_PROJECT = "novacut_active_project_v1";
@@ -339,6 +343,19 @@ export const EditorProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [aiCopilotOpen, setAiCopilotOpen] = useState(false);
   const [recorderModalOpen, setRecorderModalOpen] = useState(false);
   const [showSafeZone, setShowSafeZone] = useState(false);
+  const [isAutoSaved, setIsAutoSaved] = useState(false);
+  const autoSaveToastTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const isFirstMountRef = useRef(true);
+
+  const triggerAutoSaveToast = useCallback(() => {
+    setIsAutoSaved(true);
+    if (autoSaveToastTimerRef.current) {
+      clearTimeout(autoSaveToastTimerRef.current);
+    }
+    autoSaveToastTimerRef.current = setTimeout(() => {
+      setIsAutoSaved(false);
+    }, 2200);
+  }, []);
 
   // Global Media Assets (Uploaded Videos & Images)
   const [uploadedAssets, setUploadedAssets] = useState<MediaAsset[]>(() => {
@@ -474,7 +491,14 @@ export const EditorProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       futureRef.current = [];
     }
     isHistoryAction.current = false;
-  }, [project]);
+
+    // Trigger subtle non-intrusive auto-save toast (skip initial mount)
+    if (isFirstMountRef.current) {
+      isFirstMountRef.current = false;
+    } else {
+      triggerAutoSaveToast();
+    }
+  }, [project, triggerAutoSaveToast]);
 
   // Audio Sync on Playback
   useEffect(() => {
@@ -991,6 +1015,8 @@ export const EditorProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         setRecorderModalOpen,
         showSafeZone,
         setShowSafeZone,
+        isAutoSaved,
+        triggerAutoSaveToast,
       }}
     >
       {children}

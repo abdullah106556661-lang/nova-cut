@@ -1,4 +1,4 @@
-import React, { useEffect } from "react";
+import React from "react";
 import { EditorHeader } from "./Header/EditorHeader";
 import { EditorSidebar } from "./Sidebar/EditorSidebar";
 import { PreviewCanvas } from "./PreviewCanvas";
@@ -21,69 +21,16 @@ import { ExportModal } from "./Modals/ExportModal";
 import { ShortcutsModal } from "./Modals/ShortcutsModal";
 import { MediaRecorderModal } from "./Modals/MediaRecorderModal";
 import { AuthModal } from "./Modals/AuthModal";
+import { AutoSaveToast } from "./AutoSaveToast";
 
 import { useEditor } from "../../context/EditorContext";
+import { useKeyboardShortcuts } from "../../hooks/useKeyboardShortcuts";
 
 export const EditorWorkspace: React.FC = () => {
-  const {
-    activePanel,
-    togglePlayPause,
-    splitClipAtPlayhead,
-    removeClip,
-    selectedClipId,
-    undo,
-    redo,
-    setSelectedClipId,
-    setExportModalOpen,
-  } = useEditor();
+  const { activePanel, isAutoSaved, project } = useEditor();
 
-  // Global Keyboard Shortcuts Listener
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Don't trigger hotkeys when typing in input/textarea
-      const tag = (e.target as HTMLElement).tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") {
-        return;
-      }
-
-      if (e.code === "Space") {
-        e.preventDefault();
-        togglePlayPause();
-      } else if (e.code === "KeyS" && !e.ctrlKey && !e.metaKey) {
-        e.preventDefault();
-        splitClipAtPlayhead();
-      } else if (e.code === "Delete" || e.code === "Backspace") {
-        if (selectedClipId) {
-          e.preventDefault();
-          removeClip(selectedClipId);
-        }
-      } else if ((e.ctrlKey || e.metaKey) && e.code === "KeyZ") {
-        e.preventDefault();
-        if (e.shiftKey) {
-          redo();
-        } else {
-          undo();
-        }
-      } else if ((e.ctrlKey || e.metaKey) && e.code === "KeyE") {
-        e.preventDefault();
-        setExportModalOpen(true);
-      } else if (e.code === "Escape") {
-        setSelectedClipId(null);
-      }
-    };
-
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [
-    togglePlayPause,
-    splitClipAtPlayhead,
-    removeClip,
-    selectedClipId,
-    undo,
-    redo,
-    setSelectedClipId,
-    setExportModalOpen,
-  ]);
+  // Register standard timeline keyboard shortcuts (Ctrl+Z undo, Space play/pause, Delete remove selected clip, etc.)
+  useKeyboardShortcuts();
 
   // Render the selected left panel
   const renderActivePanel = () => {
@@ -146,11 +93,14 @@ export const EditorWorkspace: React.FC = () => {
         </div>
       </div>
 
-      {/* Modals */}
+      {/* Modals & Floating Overlays */}
       <ExportModal />
       <ShortcutsModal />
       <MediaRecorderModal />
       <AuthModal />
+
+      {/* Subtle Auto-Save Toast Notification */}
+      <AutoSaveToast visible={isAutoSaved} projectName={project.name} />
     </div>
   );
 };

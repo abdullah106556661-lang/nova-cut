@@ -2,6 +2,8 @@ import { Request, Response, NextFunction } from "express";
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import { db, UserRecord } from "./db";
+import { config } from "./config";
+import { sendError } from "./utils/errors";
 
 export interface AuthenticatedRequest extends Request {
   user?: UserRecord;
@@ -9,7 +11,7 @@ export interface AuthenticatedRequest extends Request {
 }
 
 export function hashPassword(plainText: string): string {
-  const salt = bcrypt.genSaltSync(12);
+  const salt = bcrypt.genSaltSync(config.saltRounds || 12);
   return bcrypt.hashSync(plainText, salt);
 }
 
@@ -17,7 +19,7 @@ export function comparePassword(plainText: string, hash: string): boolean {
   if (!plainText || !hash) return false;
   try {
     return bcrypt.compareSync(plainText, hash);
-  } catch (err) {
+  } catch {
     return false;
   }
 }
@@ -30,10 +32,10 @@ export function generate6DigitCode(): string {
   return Math.floor(100000 + Math.random() * 900000).toString();
 }
 
-// Extract session token from HttpOnly cookie, Authorization header, or custom headers
+// Extract session token from cookie, Authorization header, or x-session-token header
 export function extractToken(req: Request): string | null {
-  if (req.cookies && req.cookies.novacut_session) {
-    return req.cookies.novacut_session;
+  if (req.cookies && req.cookies[config.sessionCookieName]) {
+    return req.cookies[config.sessionCookieName];
   }
   const authHeader = req.headers.authorization;
   if (authHeader && authHeader.startsWith("Bearer ")) {
@@ -44,6 +46,30 @@ export function extractToken(req: Request): string | null {
     return customHeader.trim();
   }
   return null;
+}
+
+// Attach cookie and return sanitized user data on auth success
+export function sendAuthSuccess(res: Response, user: UserRecord, token: string, statusCode = 200) {
+  const isSecure = config.isProduction || reqIsHttps(res.req);
+  res.cookie(config.sessionCookieName, token, {
+    httpOnly: true,
+    secure: isSecure,
+    sameSite: isSecure ? "none" : "lax", // 'none' allows iframe embedding in preview
+    maxAge: config.sessionExpiryDays * 24 * 60 * 60 * 1000,
+    path: "/",
+  });
+
+  const { passwordHash, passwordResetToken, emailVerificationToken, ...safeUser } = user;
+  return res.status(statusCode).json({
+    success: true,
+    user: safeUser,
+    token,
+  });
+}
+
+function reqIsHttps(req?: Request): boolean {
+  if (!req) return false;
+  return req.secure || req.headers["x-forwarded-proto"] === "https";
 }
 
 // Authentication middleware - attaches user if valid session token exists
@@ -62,7 +88,6 @@ export function authenticateMiddleware(req: AuthenticatedRequest, res: Response,
     }
   }
 
-  // No authenticated session attached
   req.user = undefined;
   req.sessionToken = undefined;
   next();
@@ -71,10 +96,7 @@ export function authenticateMiddleware(req: AuthenticatedRequest, res: Response,
 // Require valid authentication
 export function requireAuth(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   if (!req.user) {
-    return res.status(401).json({
-      error: "Authentication required. Please sign in to continue.",
-      code: "UNAUTHORIZED",
-    });
+    return sendError(res, "Authentication required. Please sign in to continue.", 401, "UNAUTHORIZED");
   }
   next();
 }
@@ -88,10 +110,7 @@ export function requireAdmin(req: AuthenticatedRequest, res: Response, next: Nex
       status: "BLOCKED",
       details: `Unauthenticated attempt to access admin endpoint: ${req.originalUrl}`,
     });
-    return res.status(401).json({
-      error: "Authentication required for admin access.",
-      code: "UNAUTHORIZED",
-    });
+    return sendError(res, "Authentication required for administrative access.", 401, "UNAUTHORIZED");
   }
 
   const role = req.user.role;
@@ -104,10 +123,7 @@ export function requireAdmin(req: AuthenticatedRequest, res: Response, next: Nex
       status: "BLOCKED",
       details: `Unauthorized admin access attempt by user '${req.user.email}' (role: ${role}) to ${req.originalUrl}`,
     });
-    return res.status(403).json({
-      error: "Access Forbidden. You do not have administrative privileges.",
-      code: "FORBIDDEN",
-    });
+    return sendError(res, "Access Forbidden. Administrative privileges required.", 403, "FORBIDDEN");
   }
 
   next();
@@ -116,37 +132,66 @@ export function requireAdmin(req: AuthenticatedRequest, res: Response, next: Nex
 // SuperAdmin only middleware
 export function requireSuperAdmin(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   if (!req.user || req.user.role !== "superadmin") {
-    return res.status(403).json({
-      error: "Access Forbidden. SuperAdmin access required.",
-      code: "FORBIDDEN",
-    });
+    return sendError(res, "Access Forbidden. SuperAdmin privileges required.", 403, "FORBIDDEN");
   }
+  next();
+}
+
+// Pro Plan requirement middleware
+export function requireProPlan(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  if (!req.user) {
+    return sendError(res, "Authentication required. Please sign in to access Pro features.", 401, "UNAUTHORIZED");
+  }
+
+  const isPro =
+    req.user.plan === "studio_pro" ||
+    req.user.plan === "creator" ||
+    req.user.role === "admin" ||
+    req.user.role === "superadmin";
+
+  if (!isPro) {
+    db.addAuditLog({
+      userId: req.user.id,
+      userEmail: req.user.email,
+      eventType: "ACCESS_DENIED",
+      ipAddress: req.ip || "unknown",
+      status: "BLOCKED",
+      details: `Pro feature blocked for free plan user '${req.user.email}' on ${req.originalUrl}`,
+    });
+
+    return sendError(
+      res,
+      "Pro Studio Plan required. Please transfer PKR 1,500 via JazzCash to 03176901963 and submit your Transaction ID for activation.",
+      403,
+      "PRO_REQUIRED"
+    );
+  }
+
   next();
 }
 
 // Server-side credit deduction middleware
 export function checkAndDeductCredits(cost: number, featureName: string) {
   return (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
-    // If user is guest / unauthenticated, allow them with default guest credits rather than blocking with 401
     if (!req.user) {
-      return next();
+      return sendError(res, "Authentication required. Please sign in or create an account to use AI tools.", 401, "UNAUTHORIZED");
     }
 
-    // SuperAdmin has Unlimited credits
+    // SuperAdmin has unlimited credits
     if (req.user.role === "superadmin") {
       return next();
     }
 
     if (req.user.aiCreditsRemaining < cost) {
-      return res.status(402).json({
-        error: `Insufficient AI credits. This operation requires ${cost} credits, but you have ${req.user.aiCreditsRemaining} / 500 Daily Credits remaining. Your credits will automatically refresh at midnight.`,
-        code: "INSUFFICIENT_CREDITS",
-        required: cost,
-        available: req.user.aiCreditsRemaining,
-      });
+      return sendError(
+        res,
+        `Insufficient AI credits. This operation requires ${cost} credits, but you have ${req.user.aiCreditsRemaining} / 500 Credits remaining. Free credits automatically refresh every 3 days.`,
+        402,
+        "INSUFFICIENT_CREDITS",
+        { required: cost, available: req.user.aiCreditsRemaining }
+      );
     }
 
-    // Deduct on server atomically
     const updated = db.updateUser(req.user.id, {
       aiCreditsRemaining: Math.max(0, req.user.aiCreditsRemaining - cost),
     });

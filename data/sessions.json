@@ -1,0 +1,16 @@
+[
+  {
+    "token": "sess_890e4ed6188efe470293354e129bb9ff534c503b1c7b8a05cb45e55b48accff1",
+    "userId": "usr_superadmin_057f896c",
+    "createdAt": 1788547599766,
+    "expiresAt": 1789152399766
+  },
+  {
+    "token": "sess_f1557aa2f27fecfa958dc95f5997118eb0fbd20c4683f32226b3b59946b8cfb2",
+    "userId": "usr_superadmin_057f896c",
+    "createdAt": 1788548973069,
+    "expiresAt": 1791140973069,
+    "userAgent": "curl/7.88.1",
+    "ipAddress": "127.0.0.1"
+  }
+]

@@ -63,7 +63,7 @@ export const JazzCashModal: React.FC = () => {
     reader.readAsDataURL(file);
   };
 
-  const handleActivate = (e: React.FormEvent) => {
+  const handleActivate = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
 
@@ -79,21 +79,18 @@ export const JazzCashModal: React.FC = () => {
     }
 
     setIsSubmitting(true);
-    setTimeout(() => {
-      setIsSubmitting(false);
+    try {
+      await activateProWithJazzCash(cleanTid, senderPhone);
       setSuccess(true);
-      activateProWithJazzCash(cleanTid, senderPhone);
       setTimeout(() => {
         setSuccess(false);
         setJazzCashModalOpen(false);
       }, 2400);
-    }, 900);
-  };
-
-  const handleInstantTestActivate = () => {
-    const mockTid = `JC-${Date.now().toString().slice(-8)}`;
-    activateProWithJazzCash(mockTid, JAZZCASH_NUMBER);
-    setJazzCashModalOpen(false);
+    } catch (err: any) {
+      setError(err?.message || "Failed to submit JazzCash transaction.");
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -327,27 +324,19 @@ export const JazzCashModal: React.FC = () => {
 
                 <div className="pt-2 flex flex-col sm:flex-row gap-2">
                   <button
+                    id="submit-jazzcash-payment-btn"
                     type="submit"
                     disabled={isSubmitting}
-                    className="flex-1 py-3 px-4 rounded-xl bg-gradient-to-r from-red-600 via-rose-600 to-amber-600 hover:from-red-500 hover:to-amber-500 text-white text-xs font-bold flex items-center justify-center gap-2 shadow-lg shadow-red-600/25 transition-all cursor-pointer disabled:opacity-50"
+                    className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-red-600 via-rose-600 to-amber-600 hover:from-red-500 hover:to-amber-500 text-white text-xs font-bold flex items-center justify-center gap-2 shadow-lg shadow-red-600/25 transition-all cursor-pointer disabled:opacity-50"
                   >
                     {isSubmitting ? (
-                      <span>Verifying Payment Documents...</span>
+                      <span>Verifying Transfer TID...</span>
                     ) : (
                       <>
-                        <Zap className="w-4 h-4 fill-current text-amber-300" />
-                        <span>Submit Details & Activate Pro</span>
+                        <ShieldCheck className="w-4 h-4 text-emerald-300" />
+                        <span>Submit Transfer TID for Pro Verification</span>
                       </>
                     )}
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={handleInstantTestActivate}
-                    className="py-3 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-xs font-semibold border border-slate-700 transition-colors cursor-pointer"
-                    title="Instant Demo Activation"
-                  >
-                    Instant Test
                   </button>
                 </div>
               </form>

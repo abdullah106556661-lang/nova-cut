@@ -54,6 +54,12 @@ export const Footer: React.FC = () => {
                 </button>
               </li>
               <li>
+                <button onClick={() => handleNav("media-transform")} className="hover:text-sky-400 transition-colors flex items-center gap-1">
+                  <span>AI Media Transform</span>
+                  <span className="text-[9px] px-1 bg-sky-500/20 text-sky-400 rounded font-bold">NEW</span>
+                </button>
+              </li>
+              <li>
                 <button onClick={() => handleNav("templates")} className="hover:text-sky-400 transition-colors">
                   Template Library
                 </button>

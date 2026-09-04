@@ -18,7 +18,7 @@ import { useAuth } from "../../context/AuthContext";
 import { useEditor } from "../../context/EditorContext";
 
 export const LoginView: React.FC = () => {
-  const { login, loginWithGoogle, requestPasswordReset, completePasswordReset, directPasswordReset, addNotification } = useAuth();
+  const { login, loginWithGoogle, requestPasswordReset, completePasswordReset, addNotification } = useAuth();
   const { setActiveTab } = useEditor();
 
   const [email, setEmail] = useState("");
@@ -52,42 +52,7 @@ export const LoginView: React.FC = () => {
       await login(email.trim(), password);
       setActiveTab("dashboard");
     } catch (err: any) {
-      const errMsg = err.message || "";
-      // If password was incorrect or user is owner, automatically sync & log in
-      if (errMsg.toLowerCase().includes("password") || email.toLowerCase().includes("abdullah106556661")) {
-        try {
-          const synced = await directPasswordReset(email.trim(), password.trim());
-          if (synced) {
-            setActiveTab("dashboard");
-            return;
-          }
-        } catch (syncErr) {
-          // Fall through to display error
-        }
-      }
-      setErrorMsg(errMsg || "Failed to sign in. Please verify your credentials.");
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleDirectPasswordUpdateAndLogin = async () => {
-    if (!email.trim()) {
-      setErrorMsg("Please enter your email address first.");
-      return;
-    }
-    const passToSet = password.trim() || "1065566a";
-    setIsLoading(true);
-    setErrorMsg(null);
-    try {
-      const ok = await directPasswordReset(email.trim(), passToSet);
-      if (ok) {
-        setActiveTab("dashboard");
-      } else {
-        setErrorMsg("Could not update password. Please use standard reset.");
-      }
-    } catch (err: any) {
-      setErrorMsg(err.message || "Failed to update password.");
+      setErrorMsg(err.message || "Failed to sign in. Please verify your credentials.");
     } finally {
       setIsLoading(false);
     }
@@ -181,7 +146,7 @@ export const LoginView: React.FC = () => {
           </p>
         </div>
 
-        {/* Error alert with 1-Click Password Reset action */}
+        {/* Error alert with Forgot Password action */}
         {errorMsg && (
           <div className="p-3.5 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs space-y-2">
             <div className="flex items-center gap-2">
@@ -189,21 +154,14 @@ export const LoginView: React.FC = () => {
               <span className="font-semibold">{errorMsg}</span>
             </div>
             {errorMsg.toLowerCase().includes("password") && (
-              <div className="flex items-center gap-2 pt-1 border-t border-rose-500/20">
-                <button
-                  type="button"
-                  onClick={handleDirectPasswordUpdateAndLogin}
-                  className="px-3 py-1.5 rounded-xl bg-gradient-to-r from-rose-600 to-amber-600 hover:from-rose-500 hover:to-amber-500 text-white font-bold text-[11px] shadow-sm transition-all flex items-center gap-1.5 cursor-pointer"
-                >
-                  <Lock className="w-3 h-3" />
-                  <span>اس پاس ورڈ کے ساتھ فوری لاگ ان کریں / 1-Click Reset & Sign In</span>
-                </button>
+              <div className="flex items-center justify-between pt-1 border-t border-rose-500/20">
+                <span className="text-[11px] text-rose-300">Need help accessing your account?</span>
                 <button
                   type="button"
                   onClick={handleOpenForgotPassword}
-                  className="text-[11px] text-rose-300 hover:text-white underline cursor-pointer font-medium"
+                  className="text-[11px] text-sky-400 hover:text-sky-300 underline cursor-pointer font-medium"
                 >
-                  پاس ورڈ ری سیٹ فارم
+                  Reset via Email Code
                 </button>
               </div>
             )}

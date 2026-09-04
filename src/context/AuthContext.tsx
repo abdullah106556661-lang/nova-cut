@@ -13,6 +13,9 @@ export interface UserProfile {
   aiCreditsRemaining: number;
   dailyCreditsLimit: number;
   lastCreditResetDate: string; // YYYY-MM-DD
+  creditsCycleDays?: number; // 3-day cycle
+  lastCreditResetTimestamp?: number;
+  nextCreditResetTimestamp?: number;
   jazzCashTid?: string;
   projectsCount: number;
   isEmailVerified: boolean;
@@ -67,7 +70,6 @@ interface AuthContextType {
   requestPasswordReset: (email: string) => Promise<boolean>;
   verifyResetCode: (email: string, code: string) => Promise<boolean>;
   completePasswordReset: (email: string, code: string, newPass: string) => Promise<boolean>;
-  directPasswordReset: (email: string, newPass: string) => Promise<boolean>;
   sendVerificationEmail: () => Promise<boolean>;
   verifyEmailCode: (code: string) => Promise<boolean>;
 
@@ -257,7 +259,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
         await refreshUser();
         setJazzCashModalOpen(false);
-        addNotification("Pro Plan Activated 🎉", data.message || `JazzCash TID: ${tid} confirmed!`, "success");
+        addNotification("Payment Status", data.message || `JazzCash TID: ${tid} submitted. Pro features will activate once verified.`, "info");
         return true;
       } catch (err: any) {
         addNotification("Network Error", err.message || "Failed to verify transaction.", "error");
@@ -359,49 +361,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  // 1-Click Guest & Demo Access
+  // Guest mode disabled for strict security
   const continueAsGuest = async (): Promise<boolean> => {
-    try {
-      const res = await apiFetch("/api/auth/guest", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-      });
-
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || "Failed to initialize guest session");
-      }
-
-      if (data.token) {
-        setAuthToken(data.token);
-      }
-      setUser(data.user);
-      setAuthModalOpen(false);
-      addNotification("Welcome Guest Creator", "500 Daily AI Generation Credits ready for use!", "success");
-      return true;
-    } catch (err: any) {
-      // Fallback local guest session if offline
-      const guestLocal: UserProfile = {
-        id: `guest_${Date.now()}`,
-        name: "Guest Creator",
-        email: "guest@novacut.local",
-        avatarUrl: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80",
-        plan: "free",
-        role: "creator",
-        storageUsedMb: 0,
-        storageLimitMb: 5000,
-        aiCreditsRemaining: 500,
-        dailyCreditsLimit: 500,
-        lastCreditResetDate: new Date().toISOString().split("T")[0],
-        projectsCount: 1,
-        isEmailVerified: true,
-        status: "ACTIVE",
-      };
-      setUser(guestLocal);
-      setAuthModalOpen(false);
-      addNotification("Welcome Guest Creator", "500 Daily AI Generation Credits active.", "success");
-      return true;
-    }
+    addNotification("Authentication Required", "Guest bypass is disabled for high security. Please sign in or create an account to access NovaCut Studio and your 500 Credits.", "warning");
+    setAuthModalOpen(true);
+    return false;
   };
 
   // Logout
@@ -441,7 +405,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // Password reset
   const requestPasswordReset = async (email: string): Promise<boolean> => {
     try {
-      const res = await fetch("/api/auth/forgot-password", {
+      const res = await apiFetch("/api/auth/forgot-password", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email }),
@@ -456,7 +420,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const verifyResetCode = async (email: string, code: string): Promise<boolean> => {
     try {
-      const res = await fetch("/api/auth/verify-reset-code", {
+      const res = await apiFetch("/api/auth/verify-reset-code", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, code }),
@@ -470,7 +434,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const completePasswordReset = async (email: string, code: string, newPass: string): Promise<boolean> => {
     try {
-      const res = await fetch("/api/auth/reset-password", {
+      const res = await apiFetch("/api/auth/reset-password", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, code, newPassword: newPass }),
@@ -485,34 +449,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const directPasswordReset = async (email: string, newPass: string): Promise<boolean> => {
-    try {
-      const res = await fetch("/api/auth/direct-reset", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, newPassword: newPass }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to update password");
-      if (data.token) {
-        setAuthToken(data.token);
-      }
-      setUser(data.user);
-      setAuthModalOpen(false);
-      addNotification("Password Updated Successfully", "Your new password is now active and you are signed in.", "success");
-      return true;
-    } catch (err: any) {
-      addNotification("Reset Failed", err.message, "error");
-      return false;
-    }
-  };
-
   // Verification
   const sendVerificationEmail = async (): Promise<boolean> => {
     try {
-      const res = await fetch("/api/auth/send-verification", {
+      const res = await apiFetch("/api/auth/send-verification", {
         method: "POST",
-        credentials: "include",
       });
       const data = await res.json();
       addNotification("Verification Code", data.message || "Code sent to your email.", "info");
@@ -524,10 +465,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const verifyEmailCode = async (code: string): Promise<boolean> => {
     try {
-      const res = await fetch("/api/auth/verify-email", {
+      const res = await apiFetch("/api/auth/verify-email", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        credentials: "include",
         body: JSON.stringify({ code }),
       });
       const data = await res.json();
@@ -569,7 +509,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         requestPasswordReset,
         verifyResetCode,
         completePasswordReset,
-        directPasswordReset,
         sendVerificationEmail,
         verifyEmailCode,
         notifications,

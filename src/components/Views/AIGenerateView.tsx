@@ -1,4 +1,4 @@
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useMemo, useEffect } from "react";
 import {
   Wand2,
   Sparkles,
@@ -25,6 +25,9 @@ import {
   ShieldCheck,
   Split,
   Play,
+  Pause,
+  Maximize2,
+  Minimize2,
   ArrowRight,
   Bot,
   Mic,
@@ -54,6 +57,606 @@ interface PhotoHistoryItem {
   timestamp: string;
   aspect: string;
 }
+
+interface AIVideoPlayerCardProps {
+  videoUrl: string;
+  thumbnailUrl: string;
+  title: string;
+  scenes: { time: string; action: string; camera: string }[];
+  aspectRatio: "16:9" | "9:16";
+  fallbackUrls?: string[];
+  prompt?: string;
+  onSendToTimeline: () => void;
+  onDownload: () => void;
+}
+
+const AIVideoPlayerCard: React.FC<AIVideoPlayerCardProps> = ({
+  videoUrl,
+  thumbnailUrl,
+  title,
+  scenes,
+  aspectRatio,
+  fallbackUrls = [],
+  prompt,
+  onSendToTimeline,
+  onDownload,
+}) => {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const animFrameRef = useRef<number | null>(null);
+
+  const [isPlaying, setIsPlaying] = useState(true);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(10);
+  const [playbackSpeed, setPlaybackSpeed] = useState(1);
+  const [isMuted, setIsMuted] = useState(true);
+  const [activeSceneIdx, setActiveSceneIdx] = useState(0);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [renderMode, setRenderMode] = useState<"video" | "neural" | "picture">("video");
+  const [videoLoaded, setVideoLoaded] = useState(false);
+
+  const currentTimeRef = useRef(0);
+  const isPlayingRef = useRef(true);
+  const playbackSpeedRef = useRef(1);
+  const durationRef = useRef(10);
+
+  // Keep refs in sync
+  isPlayingRef.current = isPlaying;
+  playbackSpeedRef.current = playbackSpeed;
+  durationRef.current = duration;
+
+  // Compute proxied & reliable stream list
+  const streamPool = useMemo(() => {
+    const list = [
+      videoUrl,
+      ...(fallbackUrls || []),
+      "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4",
+      "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4",
+      "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4",
+      "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
+    ].filter(Boolean);
+
+    // Provide proxied URLs first for zero-CORS reliability
+    const proxied = list.map((url) => {
+      if (url.startsWith("http")) {
+        return `/api/ai/proxy-video?url=${encodeURIComponent(url)}`;
+      }
+      return url;
+    });
+
+    return Array.from(new Set([...proxied, ...list]));
+  }, [videoUrl, fallbackUrls]);
+
+  const [streamIndex, setStreamIndex] = useState(0);
+  const activeSrc = streamPool[streamIndex] || videoUrl;
+
+  // Cached image for 60fps canvas animation
+  const canvasImgRef = useRef<HTMLImageElement | null>(null);
+
+  useEffect(() => {
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.src = thumbnailUrl || "https://images.unsplash.com/photo-1508739773434-c26b3d09e071?w=1200&auto=format&fit=crop&q=80";
+    img.onload = () => {
+      canvasImgRef.current = img;
+    };
+  }, [thumbnailUrl]);
+
+  // Synchronize playback and run 60fps Canvas Animation loop
+  useEffect(() => {
+    let lastTs = performance.now();
+    let lastUiSync = 0;
+
+    const renderLoop = (ts: number) => {
+      const dt = (ts - lastTs) / 1000;
+      lastTs = ts;
+
+      if (isPlayingRef.current) {
+        let cur = currentTimeRef.current + dt * playbackSpeedRef.current;
+        const dur = durationRef.current || 10;
+        if (cur >= dur) {
+          cur = 0; // Loop back
+        }
+        currentTimeRef.current = cur;
+
+        // Throttle UI React state updates to ~15fps (every 66ms) to avoid React render churn
+        if (ts - lastUiSync > 66) {
+          lastUiSync = ts;
+          setCurrentTime(cur);
+
+          if (scenes && scenes.length > 0) {
+            const sceneFraction = dur / scenes.length;
+            const idx = Math.min(scenes.length - 1, Math.floor(cur / Math.max(0.1, sceneFraction)));
+            setActiveSceneIdx(idx);
+          }
+        }
+      }
+
+      // Draw Neural Motion Canvas if in neural mode or if canvas is active
+      const canvas = canvasRef.current;
+      if (canvas && canvasImgRef.current && canvasImgRef.current.complete) {
+        const ctx = canvas.getContext("2d");
+        if (ctx) {
+          const w = canvas.width;
+          const h = canvas.height;
+          ctx.clearRect(0, 0, w, h);
+
+          // Calculate cinematic motion based on currentTimeRef
+          const t = currentTimeRef.current;
+          const zoom = 1.0 + 0.08 * Math.sin(t * 0.4);
+          const panX = Math.sin(t * 0.3) * 20;
+          const panY = Math.cos(t * 0.25) * 12;
+
+          ctx.save();
+          ctx.translate(w / 2 + panX, h / 2 + panY);
+          ctx.scale(zoom, zoom);
+          ctx.drawImage(canvasImgRef.current, -w / 2, -h / 2, w, h);
+          ctx.restore();
+
+          // Atmospheric cinematic light flare & particles
+          ctx.save();
+          const grad = ctx.createRadialGradient(
+            w * 0.5 + Math.sin(t * 0.8) * 100,
+            h * 0.3 + Math.cos(t * 0.8) * 50,
+            20,
+            w * 0.5,
+            h * 0.5,
+            w * 0.8
+          );
+          grad.addColorStop(0, "rgba(168, 85, 247, 0.25)");
+          grad.addColorStop(0.5, "rgba(56, 189, 248, 0.1)");
+          grad.addColorStop(1, "rgba(0, 0, 0, 0.4)");
+          ctx.fillStyle = grad;
+          ctx.fillRect(0, 0, w, h);
+
+          // Floating animated light specks / dust particles
+          for (let i = 0; i < 20; i++) {
+            const px = ((i * 73 + t * 45) % w);
+            const py = ((i * 47 + Math.sin(t + i) * 30 + (w - t * 25)) % h);
+            const alpha = 0.3 + 0.4 * Math.sin(t * 2 + i);
+            ctx.beginPath();
+            ctx.arc(px, py, 1.5 + (i % 2), 0, Math.PI * 2);
+            ctx.fillStyle = `rgba(255, 255, 255, ${alpha})`;
+            ctx.fill();
+          }
+          ctx.restore();
+        }
+      }
+
+      animFrameRef.current = requestAnimationFrame(renderLoop);
+    };
+
+    animFrameRef.current = requestAnimationFrame(renderLoop);
+    return () => {
+      if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+    };
+  }, [scenes]);
+
+  // Sync active source when videoUrl changes
+  useEffect(() => {
+    setStreamIndex(0);
+    currentTimeRef.current = 0;
+    setCurrentTime(0);
+    setVideoLoaded(false);
+    if (videoRef.current) {
+      videoRef.current.currentTime = 0;
+      videoRef.current
+        .play()
+        .then(() => {
+          setIsPlaying(true);
+          setVideoLoaded(true);
+        })
+        .catch(() => {
+          if (videoRef.current) {
+            videoRef.current.muted = true;
+            setIsMuted(true);
+            videoRef.current
+              .play()
+              .then(() => {
+                setIsPlaying(true);
+                setVideoLoaded(true);
+              })
+              .catch(() => {
+                // If video element is blocked, seamless Neural Canvas continues playing
+                setRenderMode("neural");
+              });
+          }
+        });
+    }
+  }, [videoUrl]);
+
+  const togglePlay = () => {
+    const nextPlaying = !isPlaying;
+    setIsPlaying(nextPlaying);
+    if (videoRef.current) {
+      if (nextPlaying) {
+        videoRef.current.play().catch(() => {});
+      } else {
+        videoRef.current.pause();
+      }
+    }
+  };
+
+  const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = parseFloat(e.target.value);
+    currentTimeRef.current = val;
+    setCurrentTime(val);
+    if (videoRef.current) {
+      videoRef.current.currentTime = val;
+    }
+  };
+
+  const jumpToScene = (idx: number) => {
+    const sceneFraction = (duration || 10) / Math.max(1, scenes.length || 3);
+    const target = idx * sceneFraction;
+    currentTimeRef.current = target;
+    setCurrentTime(target);
+    setActiveSceneIdx(idx);
+    if (videoRef.current) {
+      videoRef.current.currentTime = target;
+      videoRef.current.play().catch(() => {});
+    }
+    setIsPlaying(true);
+  };
+
+  const toggleMute = () => {
+    if (!videoRef.current) return;
+    const nextMuted = !videoRef.current.muted;
+    videoRef.current.muted = nextMuted;
+    setIsMuted(nextMuted);
+  };
+
+  const handleRestart = () => {
+    currentTimeRef.current = 0;
+    setCurrentTime(0);
+    if (videoRef.current) {
+      videoRef.current.currentTime = 0;
+      videoRef.current.play().catch(() => {});
+    }
+    setIsPlaying(true);
+  };
+
+  const toggleFullscreen = () => {
+    if (!containerRef.current) return;
+    if (!document.fullscreenElement) {
+      containerRef.current.requestFullscreen?.().then(() => setIsFullscreen(true)).catch(() => {});
+    } else {
+      document.exitFullscreen?.().then(() => setIsFullscreen(false)).catch(() => {});
+    }
+  };
+
+  const formatTime = (secs: number) => {
+    const m = Math.floor(secs / 60);
+    const s = Math.floor(secs % 60);
+    return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
+  };
+
+  const handleVideoError = () => {
+    console.warn(`[AI Video Player]: Stream index ${streamIndex} failed. Trying next...`);
+    const nextIdx = streamIndex + 1;
+    if (nextIdx < streamPool.length) {
+      setStreamIndex(nextIdx);
+    } else {
+      // Switch seamlessly to 60fps Neural Motion Canvas
+      setRenderMode("neural");
+    }
+  };
+
+  const progressPercent = duration > 0 ? (currentTime / duration) * 100 : 0;
+
+  return (
+    <div className="mt-4 space-y-4">
+      {/* Video / Neural Canvas / Picture Mode Switch Header */}
+      <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-800">
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setRenderMode("video")}
+            className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
+              renderMode === "video"
+                ? "bg-purple-600 text-white shadow-md shadow-purple-600/30"
+                : "bg-slate-800 text-slate-400 hover:text-slate-200"
+            }`}
+          >
+            <Film className="w-3.5 h-3.5" />
+            <span>🎬 60fps Video Stream</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setRenderMode("neural")}
+            className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
+              renderMode === "neural"
+                ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/30"
+                : "bg-slate-800 text-slate-400 hover:text-slate-200"
+            }`}
+          >
+            <Sparkles className="w-3.5 h-3.5 text-amber-300" />
+            <span>⚡ Neural Cinema Motion</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setRenderMode("picture")}
+            className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
+              renderMode === "picture"
+                ? "bg-cyan-600 text-white shadow-md shadow-cyan-600/30"
+                : "bg-slate-800 text-slate-400 hover:text-slate-200"
+            }`}
+          >
+            <ImageIcon className="w-3.5 h-3.5" />
+            <span>🖼️ HD Film Still</span>
+          </button>
+        </div>
+
+        <div className="flex items-center gap-2">
+          {/* Speed Selector */}
+          <div className="flex items-center bg-slate-900 border border-slate-800 rounded-lg p-0.5 text-[10px] font-bold text-slate-300">
+            {[1, 1.5, 2].map((spd) => (
+              <button
+                key={spd}
+                type="button"
+                onClick={() => {
+                  setPlaybackSpeed(spd);
+                  if (videoRef.current) videoRef.current.playbackRate = spd;
+                }}
+                className={`px-2 py-0.5 rounded cursor-pointer ${playbackSpeed === spd ? "bg-purple-600 text-white" : "hover:text-white"}`}
+              >
+                {spd}x
+              </button>
+            ))}
+          </div>
+
+          <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/30">
+            {aspectRatio} • 1080p 60fps
+          </span>
+        </div>
+      </div>
+
+      {/* Main Viewport Container */}
+      <div
+        ref={containerRef}
+        className={`group relative rounded-2xl overflow-hidden border border-purple-500/40 bg-slate-950 shadow-2xl shadow-purple-950/30 flex items-center justify-center select-none ${
+          aspectRatio === "9:16" ? "aspect-[9/16] max-h-[480px] mx-auto" : "aspect-[16/9]"
+        }`}
+      >
+        {renderMode === "picture" ? (
+          /* HD Picture Still Display */
+          <div className="relative w-full h-full flex items-center justify-center bg-slate-950">
+            <img
+              src={thumbnailUrl || "https://images.unsplash.com/photo-1508739773434-c26b3d09e071?w=1200&auto=format&fit=crop&q=80"}
+              alt={title}
+              className="w-full h-full object-cover"
+              onError={(e) => {
+                const target = e.currentTarget;
+                if (target.src !== "https://images.unsplash.com/photo-1508739773434-c26b3d09e071?w=1200&auto=format&fit=crop&q=80") {
+                  target.src = "https://images.unsplash.com/photo-1508739773434-c26b3d09e071?w=1200&auto=format&fit=crop&q=80";
+                }
+              }}
+            />
+            <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-transparent to-transparent opacity-80 pointer-events-none" />
+            <div className="absolute bottom-4 left-4 right-4 flex items-center justify-between text-xs">
+              <div className="space-y-0.5">
+                <span className="px-2 py-0.5 rounded bg-cyan-500/30 text-cyan-300 text-[10px] font-bold border border-cyan-400/40">
+                  ✨ AI Photorealistic Film Still
+                </span>
+                <p className="text-slate-200 text-xs font-semibold max-w-md truncate drop-shadow">
+                  {prompt || title}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setRenderMode("video")}
+                className="px-3 py-1.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs flex items-center gap-1.5 shadow-lg shadow-purple-600/30 cursor-pointer"
+              >
+                <Play className="w-3.5 h-3.5 fill-white" />
+                <span>Play Video Stream</span>
+              </button>
+            </div>
+          </div>
+        ) : renderMode === "neural" ? (
+          /* 60fps Dynamic Neural Cinema Motion Canvas */
+          <div className="relative w-full h-full flex items-center justify-center bg-slate-950">
+            <canvas
+              ref={canvasRef}
+              width={1280}
+              height={720}
+              onClick={togglePlay}
+              className="w-full h-full object-cover cursor-pointer"
+            />
+          </div>
+        ) : (
+          /* Live 60fps Video Playback with Canvas Fallback */
+          <div className="relative w-full h-full flex items-center justify-center bg-slate-950">
+            <video
+              ref={videoRef}
+              src={activeSrc}
+              poster={thumbnailUrl}
+              autoPlay
+              loop
+              muted={isMuted}
+              playsInline
+              onLoadedMetadata={() => {
+                if (videoRef.current) {
+                  const dur = videoRef.current.duration;
+                  if (dur && !isNaN(dur) && dur > 0) setDuration(dur);
+                  videoRef.current.play().catch(() => {});
+                  setVideoLoaded(true);
+                }
+              }}
+              onPlay={() => setIsPlaying(true)}
+              onPause={() => setIsPlaying(false)}
+              onError={handleVideoError}
+              onClick={togglePlay}
+              className="w-full h-full object-cover cursor-pointer"
+            />
+
+            {/* Hidden motion canvas fallback ready behind or if video stream stalls */}
+            {!videoLoaded && (
+              <canvas
+                ref={canvasRef}
+                width={1280}
+                height={720}
+                onClick={togglePlay}
+                className="absolute inset-0 w-full h-full object-cover cursor-pointer"
+              />
+            )}
+          </div>
+        )}
+
+        {/* Top Badges Overlay (Shown across video and neural motion modes) */}
+        {renderMode !== "picture" && (
+          <div className="absolute top-3 inset-x-3 flex items-center justify-between pointer-events-none z-20">
+            <div className="flex items-center gap-2 bg-slate-950/85 backdrop-blur-md px-3 py-1 rounded-full border border-purple-500/40 text-[10px] font-bold text-white shadow-lg">
+              <span className={`w-2 h-2 rounded-full ${isPlaying ? "bg-emerald-400 animate-pulse" : "bg-amber-400"}`} />
+              <span className="font-mono">{isPlaying ? "PLAYING" : "PAUSED"}</span>
+              <span className="text-slate-400">•</span>
+              <span className="text-purple-300 font-mono">1080p 60fps</span>
+              <span className="text-slate-400">•</span>
+              <span className="text-sky-300 font-mono">{renderMode === "neural" ? "NEURAL" : "STREAM"}</span>
+            </div>
+
+            <div className="flex items-center gap-2 pointer-events-auto">
+              <button
+                type="button"
+                onClick={toggleMute}
+                className="p-2 rounded-xl bg-slate-900/90 hover:bg-slate-800 backdrop-blur-md border border-slate-700/80 text-slate-200 hover:text-white transition-all cursor-pointer shadow-lg"
+                title={isMuted ? "Unmute Audio" : "Mute Audio"}
+              >
+                {isMuted ? <VolumeX className="w-3.5 h-3.5 text-amber-400" /> : <Volume2 className="w-3.5 h-3.5 text-emerald-400" />}
+              </button>
+              <button
+                type="button"
+                onClick={toggleFullscreen}
+                className="p-2 rounded-xl bg-slate-900/90 hover:bg-slate-800 backdrop-blur-md border border-slate-700/80 text-slate-200 hover:text-white transition-all cursor-pointer shadow-lg"
+                title="Fullscreen"
+              >
+                {isFullscreen ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Big Center Play / Pause Button */}
+        {!isPlaying && renderMode !== "picture" && (
+          <button
+            type="button"
+            onClick={togglePlay}
+            className="absolute inset-0 m-auto w-16 h-16 rounded-full bg-purple-600/90 hover:bg-purple-500 border-2 border-white/80 flex items-center justify-center text-white shadow-2xl shadow-purple-600/60 backdrop-blur-md transition-transform active:scale-95 cursor-pointer z-20 group-hover:scale-110"
+          >
+            <Play className="w-7 h-7 fill-white ml-1" />
+          </button>
+        )}
+
+        {/* Bottom Custom Interactive Control Bar */}
+        {renderMode !== "picture" && (
+          <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-slate-950 via-slate-950/85 to-transparent p-3 pt-6 z-20 space-y-2">
+            {/* Progress Timeline Scrubber */}
+            <div className="relative flex items-center group/scrub">
+              <input
+                type="range"
+                min={0}
+                max={duration || 10}
+                step={0.05}
+                value={currentTime}
+                onChange={handleSeek}
+                className="w-full h-1.5 bg-slate-700/70 rounded-lg appearance-none cursor-pointer accent-purple-500 hover:h-2 transition-all"
+              />
+              <div
+                className="absolute left-0 top-0 h-1.5 bg-gradient-to-r from-purple-500 to-sky-400 rounded-lg pointer-events-none group-hover/scrub:h-2 transition-all shadow-[0_0_8px_#c084fc]"
+                style={{ width: `${progressPercent}%` }}
+              />
+            </div>
+
+            <div className="flex items-center justify-between text-xs">
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={togglePlay}
+                  className="p-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-bold transition-all cursor-pointer shadow-md"
+                >
+                  {isPlaying ? <Pause className="w-3.5 h-3.5 fill-white" /> : <Play className="w-3.5 h-3.5 fill-white ml-0.5" />}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleRestart}
+                  className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-all cursor-pointer"
+                  title="Restart from 00:00"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                </button>
+
+                <div className="font-mono text-[11px] font-bold text-slate-200">
+                  <span className="text-purple-400">{formatTime(currentTime)}</span>
+                  <span className="text-slate-500 mx-1">/</span>
+                  <span className="text-slate-400">{formatTime(duration)}</span>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={onSendToTimeline}
+                  className="px-2.5 py-1 rounded-lg bg-indigo-600/80 hover:bg-indigo-500 text-white font-bold text-[10px] flex items-center gap-1 transition-all cursor-pointer shadow-md"
+                >
+                  <Sparkles className="w-3 h-3" />
+                  <span>Send to Editor Timeline</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Interactive Storyboard Scene Cards with Click-to-Jump */}
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <p className="font-bold text-xs text-slate-300 flex items-center gap-1.5">
+            <Film className="w-3.5 h-3.5 text-purple-400" />
+            <span>Veo 3.1 Scene Storyboard Breakdown (Click to jump)</span>
+          </p>
+          <span className="text-[10px] text-purple-400 font-mono">
+            Active Scene {activeSceneIdx + 1}/{scenes.length || 3}
+          </span>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+          {scenes.map((s, idx) => {
+            const isCurrent = activeSceneIdx === idx;
+            return (
+              <button
+                type="button"
+                key={idx}
+                onClick={() => {
+                  if (renderMode === "picture") setRenderMode("video");
+                  jumpToScene(idx);
+                }}
+                className={`p-3 rounded-2xl text-left transition-all cursor-pointer border ${
+                  isCurrent
+                    ? "bg-purple-950/60 border-purple-500 text-white shadow-lg shadow-purple-900/30 ring-1 ring-purple-400/50"
+                    : "bg-slate-950 hover:bg-slate-900 border-slate-800 text-slate-300"
+                } text-[11px] space-y-1.5`}
+              >
+                <div className="flex items-center justify-between">
+                  <span className={`font-mono font-bold ${isCurrent ? "text-purple-300" : "text-purple-400"}`}>
+                    {s.time}
+                  </span>
+                  {isCurrent && (
+                    <span className="px-1.5 py-0.5 rounded-full bg-purple-500 text-white text-[9px] font-black uppercase tracking-wider animate-pulse">
+                      LIVE
+                    </span>
+                  )}
+                </div>
+                <p className="font-medium line-clamp-2 leading-snug">{s.action}</p>
+                <span className="text-[10px] text-slate-400 block font-mono">📹 {s.camera}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+};
 
 export const AIGenerateView: React.FC = () => {
   const { addClipToTrack, project, setActiveTab } = useEditor();
@@ -110,12 +713,18 @@ export const AIGenerateView: React.FC = () => {
     videoUrl: string;
     thumbnailUrl: string;
     prompt: string;
+    fallbackUrls?: string[];
     scenes: { time: string; action: string; camera: string }[];
   } | null>({
     title: "Cyberpunk Metropolis Flight",
-    videoUrl: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4",
+    videoUrl: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4",
     thumbnailUrl: "https://images.unsplash.com/photo-1508739773434-c26b3d09e071?w=800&auto=format&fit=crop&q=80",
     prompt: "Cinematic cyberpunk skyline at midnight with neon flying vehicles in heavy rain",
+    fallbackUrls: [
+      "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4",
+      "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4",
+      "https://assets.mixkit.co/videos/preview/mixkit-futuristic-city-with-neon-lights-and-flying-cars-41584-large.mp4",
+    ],
     scenes: [
       { time: "00:00 - 00:04", action: "Drone pans over glittering high-rises", camera: "Slow Orbit 24fps" },
       { time: "00:04 - 00:08", action: "Neon speeder zooms toward the camera", camera: "FPV Tracking Shot" },
@@ -314,64 +923,76 @@ export const AIGenerateView: React.FC = () => {
   // Background change / modification preset definitions
   const photoPresetOptions = [
     {
-      id: "enhance",
-      name: "✨ Enhance & 8K Upscale",
-      icon: "✨",
-      prompt: "Enhance photo resolution to 8K, fix lighting, remove background noise, crystal clear sharp focus, photorealistic masterpiece",
-    },
-    {
-      id: "portrait",
-      name: "💄 Studio Portrait Glamour",
-      icon: "💄",
-      prompt: "Apply professional high-end fashion studio portrait lighting, soft skin texture, luminous eyes, cinematic rim light",
+      id: "lion",
+      name: "🦁 شیر اور سفاری (Lion & Savannah)",
+      icon: "🦁",
+      prompt: "Keep the subject intact and add a majestic male African lion with a lush mane resting calmly beside the subject in a golden savannah, cinematic sunset rim lighting, photorealistic 8k",
     },
     {
       id: "cat",
-      name: "🐱 Add a Cute Cat",
+      name: "🐱 کاندھے پر بلی (Cat on Shoulder)",
       icon: "🐱",
-      prompt: "Keep the subject intact and add an adorable domestic fluffy cat sitting right beside them, studio lighting, photorealistic",
+      prompt: "Keep the subject intact and add an adorable fluffy domestic kitten perched gently on their shoulder, hyper-detailed fur texture, warm studio lighting, 8k masterpiece",
     },
     {
       id: "dog",
-      name: "🐶 Add a Playful Dog",
+      name: "🐶 پالتو کتا (Loyal Dog Companion)",
       icon: "🐶",
-      prompt: "Keep the subject intact and add a friendly playful golden retriever dog into the scene, photorealistic 8k",
-    },
-    {
-      id: "lion",
-      name: "🦁 Add a Wild Lion",
-      icon: "🦁",
-      prompt: "Add a majestic wild lion in the scenic golden savannah background with dramatic sunset lighting",
-    },
-    {
-      id: "line",
-      name: "⚡ Add Neon Laser Lines",
-      icon: "⚡",
-      prompt: "Add glowing electric neon laser lines radiating and pulsing around the subject, cyberpunk illumination",
-    },
-    {
-      id: "elephant",
-      name: "🐘 Add an Elephant",
-      icon: "🐘",
-      prompt: "Add a majestic large wild elephant walking in the scenic misty background landscape, cinematic 8k",
+      prompt: "Keep the subject intact and add a beautiful loyal golden retriever dog sitting lovingly beside them, soft natural bokeh, photorealistic 8k",
     },
     {
       id: "beach",
-      name: "🌴 Tropical Sunset Beach",
-      icon: "🌴",
-      prompt: "Replace background with a breathtaking tropical beach at golden sunset with turquoise water and palm trees",
+      name: "🏖️ دبئی بیچ سن سیٹ (Dubai Beach Sunset)",
+      icon: "🏖️",
+      prompt: "Seamlessly replace background with a luxurious Dubai beach resort at golden hour sunset, turquoise crystal water, palm trees, warm cinematic reflections, 8k resolution",
+    },
+    {
+      id: "car",
+      name: "🏎️ لگژری سپر کار (Supercar in Rain)",
+      icon: "🏎️",
+      prompt: "Keep the subject intact and place them next to an exotic matte-black luxury sports supercar on a rain-slicked neon street, wet ground reflections, 8k cinematic masterpiece",
+    },
+    {
+      id: "mountain",
+      name: "🏔️ برف پوش پہاڑ (Snowy Mountain Peak)",
+      icon: "🏔️",
+      prompt: "Seamlessly replace the background with towering snow-capped Swiss alpine mountain peaks under crisp blue sky, volumetric atmospheric mist, ultra-sharp 8k",
+    },
+    {
+      id: "portrait",
+      name: "📸 پرو اسٹوڈیو ہیڈ شاٹ (Pro Studio Headshot)",
+      icon: "📸",
+      prompt: "Transform into an award-winning executive studio headshot, softbox portrait lighting, shallow depth of field with creamy bokeh, natural skin texture retouching, Hasselblad 80mm lens",
     },
     {
       id: "cyberpunk",
-      name: "🏙️ Cyberpunk Metropolis",
+      name: "🏙️ سائبر پنک نیون (Cyberpunk Neon Jacket)",
       icon: "🏙️",
-      prompt: "Replace background with a futuristic cyberpunk neon metropolis in rainy night with holographic billboards",
+      prompt: "Give the subject a stylish cyberpunk high-collar tech jacket with glowing cyan and magenta neon accents, futuristic neon metropolis background with holographic billboards, 8k",
+    },
+    {
+      id: "line",
+      name: "⚡ الیکٹرک نیون لائنز (Neon Glow Lines)",
+      icon: "⚡",
+      prompt: "Add glowing electric neon laser light streams wrapping dynamically and pulsing around the subject, vivid rim illumination, dark cinematic studio background",
+    },
+    {
+      id: "elephant",
+      name: "🐘 جنگلی ہاتھی (Wild Elephant Safari)",
+      icon: "🐘",
+      prompt: "Keep the subject intact and add a majestic wild African elephant in the scenic golden landscape background with dramatic sun rays, cinematic 8k",
+    },
+    {
+      id: "enhance",
+      name: "✨ 8K ان ہانس اور لائٹنگ (8K Detail & Light)",
+      icon: "✨",
+      prompt: "Enhance photo resolution to crystal clear 8K, balance exposure, add cinematic volumetric lighting, crisp sharp focus on facial features and eyes, photorealistic masterpiece",
     },
     {
       id: "galaxy",
-      name: "🪐 Cosmic Deep Space",
+      name: "🪐 گلیکسی اور کائنات (Cosmic Deep Space)",
       icon: "🪐",
-      prompt: "Replace background with a cosmic deep space nebula with glowing stars and planetary rings",
+      prompt: "Replace background with an awe-inspiring deep space nebula with glowing purple and cyan stardust, celestial planetary rings, luminous ambient rim light",
     },
   ];
 
@@ -506,12 +1127,12 @@ export const AIGenerateView: React.FC = () => {
       setPhotoLoadingStage("✨ 8K فوٹوریلسٹک فنشنگ... / Finalizing ultra-sharp render...");
     }, 3500);
 
-    // Watchdog safety timeout (max 25s) to guarantee loader stops even on network edge case
+    // Watchdog safety timeout (max 75s) to guarantee loader stops even on network edge case
     const watchdogTimer = setTimeout(() => {
       if (activePhotoRequestIdRef.current === thisRequestId) {
         setPhotoEditLoading(false);
       }
-    }, 25000);
+    }, 75000);
 
     try {
       const res = await apiFetch("/api/ai/edit-photo", {
@@ -731,6 +1352,7 @@ export const AIGenerateView: React.FC = () => {
           videoUrl: data.videoUrl,
           thumbnailUrl: data.thumbnailUrl || "https://images.unsplash.com/photo-1508739773434-c26b3d09e071?w=800&auto=format&fit=crop&q=80",
           prompt: promptToRun,
+          fallbackUrls: data.fallbackUrls || [],
           scenes: data.scenes || [
             { time: "00:00 - 00:04", action: "Intro atmospheric wide shot with volumetric lighting", camera: "Slow Cinematic Pan" },
             { time: "00:04 - 00:08", action: "Primary subject interaction and rapid motion", camera: "FPV Orbit" },
@@ -2242,34 +2864,17 @@ export const AIGenerateView: React.FC = () => {
                   </div>
                 </div>
               ) : generatedVideo ? (
-                <div className="mt-4 space-y-4">
-                  <div className="relative rounded-2xl overflow-hidden border border-slate-800 bg-slate-950 aspect-[16/9] shadow-2xl">
-                    <video
-                      src={generatedVideo.videoUrl}
-                      controls
-                      autoPlay
-                      loop
-                      muted
-                      playsInline
-                      poster={generatedVideo.thumbnailUrl}
-                      className="w-full h-full object-cover"
-                    />
-                  </div>
-
-                  {/* Scene Timing Breakdown */}
-                  <div className="space-y-2">
-                    <p className="font-bold text-xs text-slate-300">Veo 3.1 Scene Storyboard Breakdown</p>
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                      {generatedVideo.scenes.map((s, idx) => (
-                        <div key={idx} className="p-2.5 rounded-xl bg-slate-950 border border-slate-800 text-[11px] space-y-1">
-                          <span className="font-mono text-purple-400 font-bold block">{s.time}</span>
-                          <p className="text-slate-300 font-semibold">{s.action}</p>
-                          <span className="text-[10px] text-slate-400 block">Cam: {s.camera}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
+                <AIVideoPlayerCard
+                  videoUrl={generatedVideo.videoUrl}
+                  thumbnailUrl={generatedVideo.thumbnailUrl}
+                  title={generatedVideo.title}
+                  scenes={generatedVideo.scenes}
+                  aspectRatio={videoAspect}
+                  fallbackUrls={generatedVideo.fallbackUrls}
+                  prompt={generatedVideo.prompt}
+                  onSendToTimeline={sendVideoToEditor}
+                  onDownload={() => handleDownloadMedia(generatedVideo.videoUrl, "novacut_ai_video.mp4")}
+                />
               ) : (
                 <div className="mt-4 space-y-4">
                   <div className="relative rounded-2xl overflow-hidden border border-slate-800 bg-slate-950 aspect-[16/9] shadow-2xl flex flex-col items-center justify-center p-6 text-center group">

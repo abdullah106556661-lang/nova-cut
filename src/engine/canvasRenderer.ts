@@ -249,23 +249,44 @@ export class CanvasRenderer {
     const el = this.mediaElements.get(clip.id);
     if (!el) return;
 
-    // Determine intrinsic media aspect ratio
-    let elW = 1920;
-    let elH = 1080;
-    if (el instanceof HTMLVideoElement) {
-      elW = el.videoWidth || 1920;
-      elH = el.videoHeight || 1080;
-    } else if (el instanceof HTMLImageElement) {
-      elW = el.naturalWidth || 1920;
-      elH = el.naturalHeight || 1080;
+    try {
+      // Determine intrinsic media aspect ratio
+      let elW = 1920;
+      let elH = 1080;
+      if (el instanceof HTMLVideoElement) {
+        elW = el.videoWidth || 1920;
+        elH = el.videoHeight || 1080;
+        
+        // If video is still buffering and has a thumbnail, render thumbnail smoothly
+        if (el.readyState < 2 && clip.thumbnailUrl) {
+          let thumbImg = this.mediaElements.get(`${clip.id}_thumb`) as HTMLImageElement;
+          if (!thumbImg) {
+            thumbImg = new Image();
+            thumbImg.src = clip.thumbnailUrl;
+            this.mediaElements.set(`${clip.id}_thumb`, thumbImg);
+          }
+          if (thumbImg.complete && thumbImg.naturalWidth > 0) {
+            const tW = thumbImg.naturalWidth;
+            const tH = thumbImg.naturalHeight;
+            const sf = Math.min(canvasW / tW, canvasH / tH);
+            ctx.drawImage(thumbImg, -(tW * sf) / 2, -(tH * sf) / 2, tW * sf, tH * sf);
+            return;
+          }
+        }
+      } else if (el instanceof HTMLImageElement) {
+        elW = el.naturalWidth || 1920;
+        elH = el.naturalHeight || 1080;
+      }
+
+      // Fit within canvas keeping aspect ratio
+      const scaleFactor = Math.min(canvasW / elW, canvasH / elH);
+      const drawW = elW * scaleFactor;
+      const drawH = elH * scaleFactor;
+
+      ctx.drawImage(el, -drawW / 2, -drawH / 2, drawW, drawH);
+    } catch (renderErr) {
+      // Prevent render loop crash on cross-origin taint or transient media decode error
     }
-
-    // Fit within canvas keeping aspect ratio
-    const scaleFactor = Math.min(canvasW / elW, canvasH / elH);
-    const drawW = elW * scaleFactor;
-    const drawH = elH * scaleFactor;
-
-    ctx.drawImage(el, -drawW / 2, -drawH / 2, drawW, drawH);
   }
 
   private renderTextClip(

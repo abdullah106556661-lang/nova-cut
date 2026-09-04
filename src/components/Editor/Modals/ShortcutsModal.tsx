@@ -29,6 +29,13 @@ const SHORTCUTS: ShortcutGroup[] = [
     ],
   },
   {
+    category: "Help & Discovery",
+    items: [
+      { key: "Ctrl / ⌘ + Shift + K", description: "Open Keyboard Shortcuts Help" },
+      { key: "?", description: "Quick Help (when not typing in inputs)" },
+    ],
+  },
+  {
     category: "Tools & Panels",
     items: [
       { key: "Ctrl / ⌘ + E", description: "Open Export Video Modal" },

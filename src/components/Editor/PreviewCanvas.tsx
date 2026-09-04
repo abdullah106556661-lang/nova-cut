@@ -66,11 +66,16 @@ export const PreviewCanvas: React.FC = () => {
           let videoEl = globalCanvasRenderer.getMediaElement(clip.id) as HTMLVideoElement;
           if (!videoEl) {
             videoEl = document.createElement("video");
-            videoEl.crossOrigin = "anonymous";
-            videoEl.src = clip.mediaUrl;
             videoEl.muted = true;
             videoEl.preload = "auto";
             videoEl.playsInline = true;
+            videoEl.src = clip.mediaUrl;
+            
+            // Graceful error fallback
+            videoEl.onerror = () => {
+              console.warn(`[PreviewCanvas Video Load Notice]: Fallback for clip ${clip.id}`);
+              videoEl.removeAttribute("crossorigin");
+            };
             globalCanvasRenderer.registerMediaElement(clip.id, videoEl);
           }
 

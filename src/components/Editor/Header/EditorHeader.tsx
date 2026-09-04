@@ -33,6 +33,7 @@ export const EditorHeader: React.FC = () => {
     setActivePanel,
     createProject,
     setActiveTab,
+    isAutoSaved,
   } = useEditor();
 
   const { user, logout, setAuthModalOpen } = useAuth();
@@ -108,9 +109,19 @@ export const EditorHeader: React.FC = () => {
           )}
 
           {/* Cloud Auto-Saved Badge */}
-          <div className="hidden lg:flex items-center gap-1 text-[10px] text-emerald-400 font-mono bg-emerald-950/40 border border-emerald-500/30 px-2 py-0.5 rounded-full">
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-            <span>Saved</span>
+          <div
+            className={`hidden lg:flex items-center gap-1.5 text-[10px] font-mono px-2 py-0.5 rounded-full transition-all duration-300 ${
+              isAutoSaved
+                ? "text-emerald-300 bg-emerald-950/70 border border-emerald-500/50 shadow-sm shadow-emerald-500/20"
+                : "text-emerald-400/80 bg-emerald-950/30 border border-emerald-500/20"
+            }`}
+          >
+            <span
+              className={`w-1.5 h-1.5 rounded-full bg-emerald-400 ${
+                isAutoSaved ? "scale-125 animate-ping" : "animate-pulse"
+              }`}
+            />
+            <span>{isAutoSaved ? "Auto-saving..." : "Saved"}</span>
           </div>
         </div>
       </div>
@@ -159,7 +170,7 @@ export const EditorHeader: React.FC = () => {
         {/* Shortcuts Cheat Sheet */}
         <button
           onClick={() => setShortcutsModalOpen(true)}
-          title="Keyboard Shortcuts"
+          title="Keyboard Shortcuts Help (Ctrl+Shift+K or ?)"
           className="p-2 text-slate-400 hover:text-slate-200 rounded-lg hover:bg-slate-800 transition-colors"
         >
           <Keyboard className="w-4 h-4" />

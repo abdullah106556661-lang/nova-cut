@@ -1,6 +1,8 @@
 import { Router, Response } from "express";
 import { db } from "../db";
 import { AuthenticatedRequest, requireAuth } from "../auth";
+import { validateBody, projectSaveSchema } from "../middleware/validation";
+import { sendError, sendSuccess } from "../utils/errors";
 
 export const projectRouter = Router();
 
@@ -10,25 +12,21 @@ projectRouter.use(requireAuth);
 // 1. GET ALL PROJECTS FOR CURRENT USER
 projectRouter.get("/", (req: AuthenticatedRequest, res: Response) => {
   const projects = db.getUserProjects(req.user!.id);
-  res.json({ projects });
+  return sendSuccess(res, { projects });
 });
 
 // 2. GET SINGLE PROJECT BY ID
 projectRouter.get("/:id", (req: AuthenticatedRequest, res: Response) => {
   const project = db.getProjectById(req.params.id, req.user!.id);
   if (!project) {
-    return res.status(404).json({ error: "Project not found or unauthorized access." });
+    return sendError(res, "Project not found or unauthorized access.", 404, "NOT_FOUND");
   }
-  res.json({ project });
+  return sendSuccess(res, { project });
 });
 
-// 3. CREATE OR AUTOSAVE PROJECT
-projectRouter.post("/", (req: AuthenticatedRequest, res: Response) => {
+// 3. CREATE PROJECT
+projectRouter.post("/", validateBody(projectSaveSchema), (req: AuthenticatedRequest, res: Response) => {
   const { title, description, aspectRatio = "16:9", resolution = "1080p", fps = 30, duration = 15, tracks = [], thumbnailUrl } = req.body;
-
-  if (!title || typeof title !== "string") {
-    return res.status(400).json({ error: "Project title is required." });
-  }
 
   const saved = db.saveProject({
     userId: req.user!.id,
@@ -42,7 +40,6 @@ projectRouter.post("/", (req: AuthenticatedRequest, res: Response) => {
     thumbnailUrl,
   });
 
-  // Update projects count on user record
   const userProjects = db.getUserProjects(req.user!.id);
   db.updateUser(req.user!.id, { projectsCount: userProjects.length });
 
@@ -52,17 +49,17 @@ projectRouter.post("/", (req: AuthenticatedRequest, res: Response) => {
     eventType: "PROJECT_CREATE",
     ipAddress: req.ip || "unknown",
     status: "SUCCESS",
-    details: `Created new project "${saved.title}" (ID: ${saved.id})`,
+    details: `Created project "${saved.title}" (${saved.id})`,
   });
 
-  res.json({ success: true, project: saved });
+  return sendSuccess(res, { project: saved }, 201);
 });
 
 // 4. UPDATE EXISTING PROJECT
 projectRouter.put("/:id", (req: AuthenticatedRequest, res: Response) => {
   const existing = db.getProjectById(req.params.id, req.user!.id);
   if (!existing) {
-    return res.status(404).json({ error: "Project not found or access denied." });
+    return sendError(res, "Project not found or access denied.", 404, "NOT_FOUND");
   }
 
   const { title, description, aspectRatio, resolution, fps, duration, tracks, thumbnailUrl } = req.body;
@@ -70,24 +67,24 @@ projectRouter.put("/:id", (req: AuthenticatedRequest, res: Response) => {
   const updated = db.saveProject({
     id: req.params.id,
     userId: req.user!.id,
-    title: title !== undefined ? title.slice(0, 120) : existing.title,
+    title: title !== undefined ? String(title).slice(0, 120) : existing.title,
     description: description !== undefined ? description : existing.description,
     aspectRatio: aspectRatio || existing.aspectRatio,
     resolution: resolution || existing.resolution,
     fps: fps || existing.fps,
-    duration: duration !== undefined ? duration : existing.duration,
+    duration: duration !== undefined ? Number(duration) : existing.duration,
     tracks: tracks !== undefined ? tracks : existing.tracks,
     thumbnailUrl: thumbnailUrl !== undefined ? thumbnailUrl : existing.thumbnailUrl,
   });
 
-  res.json({ success: true, project: updated });
+  return sendSuccess(res, { project: updated });
 });
 
 // 5. DUPLICATE PROJECT
 projectRouter.post("/:id/duplicate", (req: AuthenticatedRequest, res: Response) => {
   const existing = db.getProjectById(req.params.id, req.user!.id);
   if (!existing) {
-    return res.status(404).json({ error: "Project not found." });
+    return sendError(res, "Project not found.", 404, "NOT_FOUND");
   }
 
   const duplicated = db.saveProject({
@@ -105,14 +102,14 @@ projectRouter.post("/:id/duplicate", (req: AuthenticatedRequest, res: Response) 
   const userProjects = db.getUserProjects(req.user!.id);
   db.updateUser(req.user!.id, { projectsCount: userProjects.length });
 
-  res.json({ success: true, project: duplicated });
+  return sendSuccess(res, { project: duplicated }, 201);
 });
 
 // 6. DELETE PROJECT
 projectRouter.delete("/:id", (req: AuthenticatedRequest, res: Response) => {
   const deleted = db.deleteProject(req.params.id, req.user!.id);
   if (!deleted) {
-    return res.status(404).json({ error: "Project not found or access denied." });
+    return sendError(res, "Project not found or access denied.", 404, "NOT_FOUND");
   }
 
   const userProjects = db.getUserProjects(req.user!.id);
@@ -127,5 +124,5 @@ projectRouter.delete("/:id", (req: AuthenticatedRequest, res: Response) => {
     details: `Deleted project ${req.params.id}`,
   });
 
-  res.json({ success: true, message: "Project deleted successfully." });
+  return sendSuccess(res, { message: "Project deleted successfully." });
 });

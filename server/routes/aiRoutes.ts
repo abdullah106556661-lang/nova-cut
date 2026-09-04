@@ -1,7 +1,8 @@
-import { Router, Response } from "express";
+import { Router, Request, Response } from "express";
 import { GoogleGenAI } from "@google/genai";
 import { AuthenticatedRequest, checkAndDeductCredits, requireAuth } from "../auth";
-import { COST_PHOTO, COST_VIDEO, COST_PROMPT } from "../../src/context/AuthContext";
+import { COST_PHOTO, COST_VIDEO, COST_PROMPT } from "../constants";
+import { config } from "../config";
 
 export const aiRouter = Router();
 
@@ -136,7 +137,60 @@ export function isQuotaExceededError(err: any): boolean {
   );
 }
 
-// Construct high-speed, direct CDN image URL for instant, non-blocking visual generation
+// Translate and enrich visual prompts from Urdu, Roman Urdu, or short text into rich 8k cinematic descriptions
+export async function enrichAndTranslateVisualPrompt(
+  ai: GoogleGenAI | null,
+  rawPrompt: string,
+  style: string = "photorealistic"
+): Promise<string> {
+  const trimmed = (rawPrompt || "").trim();
+  if (!trimmed) return "Cinematic 8K masterpiece portrait with volumetric lighting, highly detailed";
+
+  // Heuristic dictionary for common Urdu/Roman Urdu words if offline or fast path needed
+  let preCleaned = trimmed
+    .replace(/\b(sher|shair|شیر)\b/gi, "majestic male African lion")
+    .replace(/\b(billi|bili|بلی)\b/gi, "cute fluffy domestic cat")
+    .replace(/\b(kutta|kuta|کتا)\b/gi, "loyal golden retriever dog")
+    .replace(/\b(hathi|ہاتھی)\b/gi, "majestic wild elephant")
+    .replace(/\b(ghora|گھوڑا)\b/gi, "noble Arabian black horse")
+    .replace(/\b(pahar|paharon|پہاڑ)\b/gi, "dramatic snowy mountain peaks")
+    .replace(/\b(samandar|sahil|سمندر|ساحل)\b/gi, "tropical turquoise ocean beach at golden sunset")
+    .replace(/\b(gari|gaari|گاڑی)\b/gi, "exotic luxury sports supercar with sleek reflective paint")
+    .replace(/\b(tasveer|tasweer|تصویر)\b/gi, "photorealistic 8k portrait")
+    .replace(/\b(background|پس منظر|بیک گراؤنڈ)\b/gi, "background")
+    .replace(/\b(banao|kar do|lagao|لگاؤ|بناؤ)\b/gi, "");
+
+  const hasNonAscii = /[^\x00-\x7F]/.test(trimmed);
+  const isBrief = trimmed.split(/\s+/).length < 5;
+
+  if (ai && (hasNonAscii || isBrief)) {
+    try {
+      const response = await generateContentWithResilience(ai, {
+        model: "gemini-3.1-flash-lite",
+        contents: `You are an elite visual prompt engineer. Translate any Urdu or Roman Urdu to fluent English, and enrich this visual prompt into an ultra-detailed, photorealistic masterpiece description:
+Input: "${trimmed}"
+Target Style: "${style}"
+
+Include realistic lighting (volumetric, golden hour or studio softbox), 8k resolution, crisp lens bokeh, and natural textures.
+Output ONLY the English prompt (1-2 sentences), no fluff.`,
+      });
+      const text = response.text?.trim();
+      if (text && text.length > 8) {
+        return text.replace(/^"|"$/g, "");
+      }
+    } catch (e) {
+      console.warn("[Visual Prompt Translation Notice]:", e);
+    }
+  }
+
+  // Ensure high quality modifiers are present
+  if (!preCleaned.toLowerCase().includes("photorealistic") && !preCleaned.toLowerCase().includes("masterpiece")) {
+    preCleaned = `${preCleaned}, photorealistic masterpiece, 8k resolution, cinematic studio lighting, sharp focus, 35mm photography`;
+  }
+  return preCleaned;
+}
+
+// Construct high-speed, direct CDN image URL for instant, non-blocking visual generation with Flux & Enhance
 export function getPollinationsImageUrl(
   prompt: string,
   aspect: string = "16:9",
@@ -158,8 +212,12 @@ export function getPollinationsImageUrl(
     height = 1024;
   }
 
-  const cleanPrompt = encodeURIComponent(prompt.trim().slice(0, 320));
-  return `https://image.pollinations.ai/prompt/${cleanPrompt}?width=${width}&height=${height}&seed=${seed}&nologo=true&model=flux`;
+  let enrichedPrompt = prompt.trim();
+  if (!enrichedPrompt.toLowerCase().includes("masterpiece") && !enrichedPrompt.toLowerCase().includes("8k")) {
+    enrichedPrompt = `${enrichedPrompt}, 8k UHD, photorealistic masterpiece, dramatic lighting, ultra-detailed textures, sharp focus`;
+  }
+  const cleanPrompt = encodeURIComponent(enrichedPrompt.slice(0, 360));
+  return `https://image.pollinations.ai/prompt/${cleanPrompt}?width=${width}&height=${height}&seed=${seed}&nologo=true&model=flux&enhance=true`;
 }
 
 // Fetch high-resolution generated visuals via fast generative URL
@@ -244,27 +302,61 @@ export async function editImageWithGemini(
   const validAspects = ["1:1", "3:4", "4:3", "9:16", "16:9"];
   const aspect = validAspects.includes(options.aspectRatio || "") ? (options.aspectRatio as any) : "16:9";
 
-  if (ai) {
-    try {
-      const analysisPrompt = `Analyze the subject in this input photo and formulate the ultimate photorealistic generation prompt to execute this edit request: "${options.prompt}".
-Preserve the subject's gender, ethnicity, expression and pose, while seamlessly altering background, lighting, attire, or adding requested animals/objects (cat, dog, lion, elephant, etc.).
-Return JSON:
-{
-  "enhancedPrompt": "Photorealistic 8k masterpiece prompt...",
-  "stylingParams": {
-    "hueRotate": 0,
-    "saturate": 115,
-    "brightness": 105,
-    "contrast": 110,
-    "tintColor": "#6366f1",
-    "tintOpacity": 0.15,
-    "vignette": true
-  }
-}
-Only valid JSON.`;
+  // Translate & enrich prompt before sending to image generation models
+  const cleanPrompt = await enrichAndTranslateVisualPrompt(ai, options.prompt, "photorealistic");
 
-      const analysisRes = await generateContentWithResilience(ai, {
-        model: "gemini-3.7-flash",
+  if (ai) {
+    // 1. First attempt: Direct Image-to-Image transformation with Gemini 3.1 Flash Image models
+    try {
+      const imageEditPromise = ai.models.generateContent({
+        model: "gemini-3.1-flash-lite-image",
+        contents: {
+          parts: [
+            {
+              inlineData: {
+                data: options.base64Data,
+                mimeType: options.mimeType || "image/jpeg",
+              },
+            },
+            {
+              text: `Modify this photo according to this instruction: "${cleanPrompt}". Strictly maintain the subject's exact facial structure, identity, expression, skin tone, and body pose while seamlessly applying the requested background, atmospheric lighting, clothing, or added animals/objects with photorealistic 8k quality and natural shadows.`,
+            },
+          ],
+        },
+        config: {
+          imageConfig: {
+            aspectRatio: aspect,
+          },
+        },
+      });
+
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("Direct image editing timeout")), 12000)
+      );
+
+      const res: any = await Promise.race([imageEditPromise, timeoutPromise]);
+      const parts = res?.candidates?.[0]?.content?.parts || [];
+      for (const part of parts) {
+        if (part.inlineData?.data) {
+          const mime = part.inlineData.mimeType || "image/png";
+          return {
+            imageUrl: `data:${mime};base64,${part.inlineData.data}`,
+            mimeType: mime,
+            isQuotaFallback: false,
+          };
+        }
+      }
+    } catch (directErr) {
+      console.warn("[Direct Gemini image edit fallback]:", directErr);
+    }
+
+    // 2. Second attempt: Rapid multimodal visual feature analysis
+    try {
+      const analysisPrompt = `Analyze the subject in this input photo and formulate the ultimate photorealistic generation prompt to execute this edit request: "${cleanPrompt}".
+Preserve the subject's gender, ethnicity, facial features, hair, and pose, while altering background, lighting, or adding requested animals/objects (e.g. lion, cat, sports car, sunset). Output ONLY the enhanced English prompt (1-2 sentences).`;
+
+      const genPromise = ai.models.generateContent({
+        model: "gemini-3.1-flash-lite",
         contents: {
           parts: [
             {
@@ -276,11 +368,14 @@ Only valid JSON.`;
             { text: analysisPrompt },
           ],
         },
-        config: { responseMimeType: "application/json" },
       });
 
-      const parsed = JSON.parse(analysisRes.text || "{}");
-      const enhancedPrompt = parsed.enhancedPrompt || `${options.prompt}, photorealistic, 8k, cinematic lighting, ultra sharp focus`;
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("Multimodal analysis timeout")), 8000)
+      );
+
+      const analysisRes: any = await Promise.race([genPromise, timeoutPromise]);
+      const enhancedPrompt = analysisRes.text?.trim() || `${cleanPrompt}, photorealistic, 8k, cinematic lighting, ultra sharp focus`;
       const directCdnUrl = getPollinationsImageUrl(enhancedPrompt, aspect);
 
       return {
@@ -293,7 +388,7 @@ Only valid JSON.`;
     }
   }
 
-  const directCdnUrl = getPollinationsImageUrl(`${options.prompt}, photorealistic, 8k resolution, studio lighting`, aspect);
+  const directCdnUrl = getPollinationsImageUrl(`${cleanPrompt}, photorealistic, 8k resolution, studio lighting`, aspect);
   return {
     imageUrl: directCdnUrl,
     mimeType: "image/jpeg",
@@ -317,45 +412,55 @@ export async function generateTextToImageWithGemini(
       ? "9:16"
       : options.aspectRatio === "1:1"
       ? "1:1"
+      : options.aspectRatio === "3:4"
+      ? "3:4"
+      : options.aspectRatio === "4:3"
+      ? "4:3"
       : "16:9";
 
-  // Try Imagen 3 first with a fast timeout (3.5s) if AI client is available
+  // Translate and enrich prompt for maximum photographic detail
+  const enrichedPrompt = await enrichAndTranslateVisualPrompt(ai, options.prompt, "photorealistic");
+
+  // Try Gemini Image generation first if AI client is available
   if (ai) {
     try {
-      const imagenPromise = ai.models.generateImages({
-        model: "imagen-3.0-generate-002",
-        prompt: options.prompt,
+      const imageGenPromise = ai.models.generateContent({
+        model: "gemini-3.1-flash-lite-image",
+        contents: {
+          parts: [{ text: enrichedPrompt }],
+        },
         config: {
-          numberOfImages: targetCount,
-          outputMimeType: "image/jpeg",
-          aspectRatio: validAspect as any,
+          imageConfig: {
+            aspectRatio: validAspect as any,
+          },
         },
       });
 
       const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("Imagen timeout")), 3500)
+        setTimeout(() => reject(new Error("Gemini Image timeout")), 12000)
       );
 
-      const imagenResponse: any = await Promise.race([imagenPromise, timeoutPromise]);
-
-      for (const img of imagenResponse?.generatedImages || []) {
-        if (img.image?.imageBytes) {
-          images.push(`data:image/jpeg;base64,${img.image.imageBytes}`);
+      const res: any = await Promise.race([imageGenPromise, timeoutPromise]);
+      const parts = res?.candidates?.[0]?.content?.parts || [];
+      for (const part of parts) {
+        if (part.inlineData?.data) {
+          const mime = part.inlineData.mimeType || "image/png";
+          images.push(`data:${mime};base64,${part.inlineData.data}`);
         }
       }
       if (images.length >= targetCount) {
         return images;
       }
     } catch (imgnErr: any) {
-      // Gracefully fall through to instant direct visual generator
+      // Gracefully fall through to high-definition visual generator
     }
   }
 
-  // Instant high-definition visual generation
+  // Instant high-definition visual generation fallback
   const remainingCount = targetCount - images.length;
   for (let i = 0; i < remainingCount; i++) {
     const seed = Math.floor(Math.random() * 9000000) + 100000 + i * 999;
-    images.push(getPollinationsImageUrl(options.prompt, validAspect, seed));
+    images.push(getPollinationsImageUrl(enrichedPrompt, validAspect, seed));
   }
 
   return images;
@@ -369,41 +474,73 @@ export async function generateContentWithResilience(
     config?: any;
   }
 ) {
-  const primaryModel = options.model || "gemini-3.7-flash";
-  // Strictly use valid @google/genai models per official guidelines
-  const fallbackCandidates = ["gemini-3.7-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"];
-  const modelChain = Array.from(new Set([primaryModel, ...fallbackCandidates]));
+  const requestedModel = options.model || config.models.text;
+  // Valid @google/genai models prioritizing fast, reliable models:
+  const fallbackCandidates = [
+    requestedModel,
+    config.models.text,
+    "gemini-3.6-flash",
+    "gemini-3.7-flash",
+    "gemini-3.5-flash",
+    "gemini-3.1-flash-lite",
+  ];
+  const modelChain = Array.from(new Set(fallbackCandidates));
 
   let lastError: any = null;
 
   for (const currentModel of modelChain) {
-    try {
-      const genPromise = ai.models.generateContent({
-        model: currentModel,
-        contents: options.contents,
-        config: options.config,
-      });
+    // Retry up to 2 times for transient 503 / 429 errors per model before switching
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const genPromise = ai.models.generateContent({
+          model: currentModel,
+          contents: options.contents,
+          config: options.config,
+        });
 
-      const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error(`Model ${currentModel} timeout`)), 6000)
-      );
+        // 10s timeout per attempt for fast responsive user experience
+        const timeoutPromise = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error(`Model ${currentModel} timeout (10s)`)), 10000)
+        );
 
-      const response: any = await Promise.race([genPromise, timeoutPromise]);
+        const response: any = await Promise.race([genPromise, timeoutPromise]);
 
-      if (response && (response.text || response.candidates?.length)) {
-        return response;
+        if (response && (response.text || response.candidates?.length)) {
+          return response;
+        }
+      } catch (err: any) {
+        lastError = err;
+        const errMsg = (err?.message || JSON.stringify(err)).toLowerCase();
+        
+        const isDemandSpikeOr503 =
+          errMsg.includes("503") ||
+          errMsg.includes("unavailable") ||
+          errMsg.includes("high demand") ||
+          errMsg.includes("overloaded") ||
+          err?.status === 503 ||
+          err?.code === 503 ||
+          err?.status === "UNAVAILABLE";
+
+        const isRateLimitOr429 =
+          errMsg.includes("429") ||
+          errMsg.includes("quota") ||
+          errMsg.includes("rate limit") ||
+          err?.status === 429 ||
+          err?.code === 429;
+
+        // If high demand spike (503) or rate limit (429), short pause before retry or move to fallback model
+        if ((isDemandSpikeOr503 || isRateLimitOr429) && attempt === 0) {
+          await new Promise((r) => setTimeout(r, 500 + Math.random() * 500));
+          continue; // retry once
+        }
+
+        // If it failed again or is another error, break to next candidate model
+        break;
       }
-    } catch (err: any) {
-      lastError = err;
-      const errMsg = (err?.message || JSON.stringify(err)).toLowerCase();
-      console.warn(`[Gemini Model ${currentModel} Notice]: ${err?.message || err}.`);
-
-      // If model not found or unavailable, try next model in chain immediately
-      continue;
     }
   }
 
-  throw lastError || new Error("All Gemini models were unavailable.");
+  throw lastError || new Error("All Gemini models are temporarily experiencing high demand. Please try again in a few moments.");
 }
 
 // 1. VIDEO SCRIPT & STORYBOARD (Urdu & English)
@@ -461,7 +598,7 @@ Return JSON object:
 Only valid JSON.`;
 
       const response = await generateContentWithResilience(ai, {
-        model: "gemini-3.7-flash",
+        model: "gemini-3.8-flash",
         contents: prompt,
         config: { responseMimeType: "application/json" },
       });
@@ -553,7 +690,7 @@ Return JSON array of objects:
 Only valid JSON.`;
 
       const response = await generateContentWithResilience(ai, {
-        model: "gemini-3.7-flash",
+        model: "gemini-3.8-flash",
         contents: prompt,
         config: { responseMimeType: "application/json" },
       });
@@ -765,24 +902,7 @@ aiRouter.post(
         // IMAGE-TO-IMAGE EDITING MODE (User uploaded a photo)
         validateImageBytes(sourceInlineData.data, sourceInlineData.mimeType);
 
-        let editingInstruction = prompt.trim();
-        if (ai) {
-          try {
-            const promptAnalysis = await generateContentWithResilience(ai, {
-              contents: `You are an expert AI photo editor.
-The user provided the following image-to-image editing request: "${prompt}".
-Action type or preset: "${actionType}".
-
-Translate and produce a concise, precise English instruction for image transformation (e.g. changing the background, adding an object/animal beside subject, lighting, clothes) while keeping original subject/face preserved. Output ONLY the clean English instruction (1-2 sentences).`,
-            });
-            const parsed = promptAnalysis.text?.trim();
-            if (parsed && parsed.length > 5) {
-              editingInstruction = parsed;
-            }
-          } catch (err) {
-            console.warn("[Edit Photo Intent Translation]:", err);
-          }
-        }
+        const editingInstruction = await enrichAndTranslateVisualPrompt(ai, prompt, actionType);
 
         const editResult = await editImageWithGemini(ai, {
           base64Data: sourceInlineData.data,
@@ -805,22 +925,10 @@ Translate and produce a concise, precise English instruction for image transform
         });
       } else {
         // DIRECT PROMPT PHOTO GENERATION MODE (User did NOT upload a photo, just entered a prompt)
+        const enhancedPrompt = await enrichAndTranslateVisualPrompt(ai, prompt, actionType);
         let generatedImageUrl: string | null = null;
-        let enhancedPrompt = prompt.trim();
 
         if (ai) {
-          try {
-            const promptEnhance = await generateContentWithResilience(ai, {
-              contents: `Enhance this user idea into an ultra-detailed, 8K photorealistic image generation prompt: "${prompt}". Style: "${actionType}". Output ONLY the enhanced English prompt (1-2 sentences).`,
-            });
-            const enhanced = promptEnhance.text?.trim();
-            if (enhanced && enhanced.length > 5) {
-              enhancedPrompt = enhanced;
-            }
-          } catch (err) {
-            console.warn("[Prompt enhance notice]:", err);
-          }
-
           try {
             const variations = await generateTextToImageWithGemini(ai, {
               prompt: enhancedPrompt,
@@ -897,34 +1005,66 @@ const VIDEO_ASSET_REGISTRY = {
   nature_landscape: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
   tech_landscape: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4",
   action_landscape: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/WeAreGoingOnBullrun.mp4",
+  people_landscape: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/Sintel.mp4",
   portrait_cinematic: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4",
   portrait_urban: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerJoyBlazes.mp4",
+  mixkit_cyberpunk: "https://assets.mixkit.co/videos/preview/mixkit-futuristic-city-with-neon-lights-and-flying-cars-41584-large.mp4",
+  mixkit_nature: "https://assets.mixkit.co/videos/preview/mixkit-waves-coming-to-the-beach-5016-large.mp4",
+  mixkit_traffic: "https://assets.mixkit.co/videos/preview/mixkit-traffic-lights-in-the-city-at-night-42289-large.mp4",
+  mixkit_dance: "https://assets.mixkit.co/videos/preview/mixkit-young-woman-dancing-in-a-studio-41485-large.mp4",
 };
 
-function selectAppropriateVideoAsset(prompt: string, aspect: string, style: string): string {
+function selectAppropriateVideoAsset(prompt: string, aspect: string, style: string): { primary: string; fallbacks: string[] } {
   const p = (prompt || "").toLowerCase();
   const s = (style || "").toLowerCase();
 
   if (aspect === "9:16") {
     if (p.includes("city") || p.includes("cyber") || p.includes("car") || p.includes("tech")) {
-      return VIDEO_ASSET_REGISTRY.portrait_urban;
+      return {
+        primary: VIDEO_ASSET_REGISTRY.portrait_urban,
+        fallbacks: [VIDEO_ASSET_REGISTRY.portrait_cinematic, VIDEO_ASSET_REGISTRY.action_landscape],
+      };
     }
-    return VIDEO_ASSET_REGISTRY.portrait_cinematic;
+    return {
+      primary: VIDEO_ASSET_REGISTRY.portrait_cinematic,
+      fallbacks: [VIDEO_ASSET_REGISTRY.portrait_urban, VIDEO_ASSET_REGISTRY.cinematic_landscape],
+    };
   }
 
-  if (p.includes("cyber") || p.includes("neon") || p.includes("robot") || p.includes("future") || s.includes("cyber")) {
-    return VIDEO_ASSET_REGISTRY.cyberpunk_landscape;
+  if (p.includes("dance") || p.includes("girl") || p.includes("model") || p.includes("fashion") || p.includes("people") || p.includes("woman") || p.includes("man")) {
+    return {
+      primary: VIDEO_ASSET_REGISTRY.mixkit_dance,
+      fallbacks: [VIDEO_ASSET_REGISTRY.people_landscape, VIDEO_ASSET_REGISTRY.cinematic_landscape],
+    };
   }
-  if (p.includes("tech") || p.includes("code") || p.includes("hologram") || p.includes("ai") || s.includes("3d")) {
-    return VIDEO_ASSET_REGISTRY.tech_landscape;
+  if (p.includes("cyber") || p.includes("neon") || p.includes("robot") || p.includes("future") || s.includes("cyber") || p.includes("flight") || p.includes("skyline")) {
+    return {
+      primary: VIDEO_ASSET_REGISTRY.mixkit_cyberpunk,
+      fallbacks: [VIDEO_ASSET_REGISTRY.cyberpunk_landscape, VIDEO_ASSET_REGISTRY.cinematic_landscape],
+    };
   }
-  if (p.includes("nature") || p.includes("water") || p.includes("forest") || p.includes("mountain") || p.includes("animal")) {
-    return VIDEO_ASSET_REGISTRY.nature_landscape;
+  if (p.includes("tech") || p.includes("code") || p.includes("hologram") || p.includes("ai") || s.includes("3d") || p.includes("computer")) {
+    return {
+      primary: VIDEO_ASSET_REGISTRY.tech_landscape,
+      fallbacks: [VIDEO_ASSET_REGISTRY.cyberpunk_landscape, VIDEO_ASSET_REGISTRY.mixkit_traffic],
+    };
   }
-  if (p.includes("car") || p.includes("fast") || p.includes("race") || p.includes("action") || p.includes("flight")) {
-    return VIDEO_ASSET_REGISTRY.action_landscape;
+  if (p.includes("nature") || p.includes("water") || p.includes("forest") || p.includes("mountain") || p.includes("animal") || p.includes("ocean") || p.includes("beach") || p.includes("sea")) {
+    return {
+      primary: VIDEO_ASSET_REGISTRY.mixkit_nature,
+      fallbacks: [VIDEO_ASSET_REGISTRY.nature_landscape, VIDEO_ASSET_REGISTRY.cinematic_landscape],
+    };
   }
-  return VIDEO_ASSET_REGISTRY.cinematic_landscape;
+  if (p.includes("car") || p.includes("fast") || p.includes("race") || p.includes("action") || p.includes("fire")) {
+    return {
+      primary: VIDEO_ASSET_REGISTRY.action_landscape,
+      fallbacks: [VIDEO_ASSET_REGISTRY.mixkit_traffic, VIDEO_ASSET_REGISTRY.cinematic_landscape],
+    };
+  }
+  return {
+    primary: VIDEO_ASSET_REGISTRY.mixkit_traffic,
+    fallbacks: [VIDEO_ASSET_REGISTRY.cinematic_landscape, VIDEO_ASSET_REGISTRY.cyberpunk_landscape],
+  };
 }
 
 // 5a. Asynchronous Text-to-Video & Image-to-Video Generation Endpoint
@@ -947,7 +1087,7 @@ aiRouter.post(
       const ai = getAIClient();
 
       const jobId = `job_vid_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-      const selectedVideo = selectAppropriateVideoAsset(cleanPrompt, aspectRatio, style);
+      const videoSelection = selectAppropriateVideoAsset(cleanPrompt, aspectRatio, style);
 
       // Generate structured storyboard scenes with Gemini or heuristic fallback
       let scenes = [
@@ -980,24 +1120,27 @@ Only valid JSON array.`;
         }
       }
 
+      // Generate guaranteed high-resolution cinematic thumbnail matched to the prompt
       let thumbUrl = sourceImageUrl || imageBase64 || "";
-      if (!thumbUrl && ai) {
-        try {
-          const thumbGenerated = await generateTextToImageWithGemini(ai, {
-            prompt: `${cleanPrompt}, cinematic film still, masterpiece, 8k, ${style}`,
-            aspectRatio,
-            numberOfImages: 1,
-          });
-          if (thumbGenerated && thumbGenerated[0]) {
-            thumbUrl = thumbGenerated[0];
-          }
-        } catch (thumbErr) {
-          console.warn("[Video Thumbnail Fallback]:", thumbErr);
-        }
-      }
-
       if (!thumbUrl) {
-        thumbUrl = "https://images.unsplash.com/photo-1508739773434-c26b3d09e071?w=800&auto=format&fit=crop&q=80";
+        // First try generative direct fast URL matched to the prompt
+        thumbUrl = getPollinationsImageUrl(`${cleanPrompt}, cinematic film still, masterpiece 8k, ${style}`, aspectRatio);
+
+        // Also attempt Gemini image generation if available
+        if (ai) {
+          try {
+            const thumbGenerated = await generateTextToImageWithGemini(ai, {
+              prompt: `${cleanPrompt}, cinematic film still, masterpiece, 8k, ${style}`,
+              aspectRatio,
+              numberOfImages: 1,
+            });
+            if (thumbGenerated && thumbGenerated[0]) {
+              thumbUrl = thumbGenerated[0];
+            }
+          } catch (thumbErr) {
+            console.warn("[Video Thumbnail Gemini Fallback to Fast CDN]:", thumbErr);
+          }
+        }
       }
 
       const newJob: VideoJob = {
@@ -1011,7 +1154,7 @@ Only valid JSON array.`;
         aspectRatio,
         duration: Number(duration) || 10,
         cameraMotion,
-        videoUrl: selectedVideo,
+        videoUrl: videoSelection.primary,
         thumbnailUrl: thumbUrl,
         scenes,
         createdAt: new Date().toISOString(),
@@ -1025,7 +1168,11 @@ Only valid JSON array.`;
         jobId,
         status: "COMPLETED",
         progress: 100,
-        videoUrl: selectedVideo,
+        isDemoPreview: true,
+        renderEngine: "Gemini Creative Director & High-Speed Preview Stream",
+        previewNote: "DEMO PREVIEW: Cinematic storyboard & scene stills generated via Gemini. High-speed video preview rendered for immediate studio playback.",
+        videoUrl: videoSelection.primary,
+        fallbackUrls: videoSelection.fallbacks,
         thumbnailUrl: thumbUrl,
         scenes,
         title: `AI Video: ${cleanPrompt.slice(0, 35)}`,
@@ -1035,27 +1182,100 @@ Only valid JSON array.`;
     } catch (err: any) {
       console.error("Video generation error:", err);
       // Fallback safe response so user never experiences total failure
+      const fallbackPrompt = (req.body?.prompt || "").trim() || "Cinematic AI Video Scene";
+      const fallbackThumb = getPollinationsImageUrl(fallbackPrompt, req.body?.aspectRatio || "16:9");
       res.json({
         success: true,
         jobId: `job_fallback_${Date.now()}`,
         status: "COMPLETED",
         progress: 100,
+        isDemoPreview: true,
+        renderEngine: "High-Speed Preview Stream",
+        previewNote: "DEMO PREVIEW: Fallback preview stream loaded.",
         videoUrl: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4",
-        thumbnailUrl: "https://images.unsplash.com/photo-1508739773434-c26b3d09e071?w=800&auto=format&fit=crop&q=80",
+        fallbackUrls: [
+          "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4",
+          "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4",
+        ],
+        thumbnailUrl: fallbackThumb,
         scenes: [
           { time: "00:00 - 00:04", action: "Cinematic establishing scene with atmospheric lighting", camera: "Slow Pan" },
           { time: "00:04 - 00:08", action: "Dynamic subject motion in 60fps", camera: "FPV Orbit" },
           { time: "00:08 - 00:10", action: "Final cinematic cut with lens flare", camera: "Dolly Zoom" },
         ],
-        title: "AI Video Scene",
+        title: `AI Video: ${fallbackPrompt.slice(0, 35)}`,
         duration: 10,
-        aspectRatio: "16:9",
+        aspectRatio: req.body?.aspectRatio || "16:9",
       });
     }
   }
 );
 
-// 5b. Check Video Job Status (Polling)
+// 5b. High-Performance Video Proxy with Byte-Range & CORS support
+aiRouter.get("/proxy-video", async (req: Request, res: Response) => {
+  try {
+    const rawUrl = req.query.url as string;
+    if (!rawUrl) {
+      return res.status(400).send("Video URL is required");
+    }
+
+    const videoUrl = decodeURIComponent(rawUrl);
+    const range = req.headers.range;
+
+    const fetchHeaders: Record<string, string> = {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    };
+    if (range) {
+      fetchHeaders["Range"] = range;
+    }
+
+    const response = await fetch(videoUrl, { headers: fetchHeaders });
+
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Range, Content-Type");
+    res.setHeader("Accept-Ranges", "bytes");
+
+    const contentType = response.headers.get("content-type") || "video/mp4";
+    res.setHeader("Content-Type", contentType);
+
+    const contentLength = response.headers.get("content-length");
+    if (contentLength) res.setHeader("Content-Length", contentLength);
+
+    const contentRange = response.headers.get("content-range");
+    if (contentRange) {
+      res.setHeader("Content-Range", contentRange);
+      res.status(206);
+    } else {
+      res.status(response.status);
+    }
+
+    if (!response.body) {
+      return res.end();
+    }
+
+    // Stream reader to express response
+    const reader = (response.body as any).getReader();
+    const pump = async () => {
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          res.write(Buffer.from(value));
+        }
+        res.end();
+      } catch (streamErr) {
+        res.end();
+      }
+    };
+    pump();
+  } catch (err: any) {
+    console.error("Video proxy error:", err);
+    res.status(500).send("Failed to stream video");
+  }
+});
+
+// 5c. Check Video Job Status (Polling)
 aiRouter.get("/video-status/:jobId", async (req: AuthenticatedRequest, res: Response) => {
   const { jobId } = req.params;
   const job = videoJobs.get(jobId);
@@ -1118,6 +1338,9 @@ aiRouter.post(
         success: true,
         jobId,
         status: "COMPLETED",
+        isDemoPreview: true,
+        renderEngine: "High-Speed Motion Interpolation Preview",
+        previewNote: "DEMO PREVIEW: 2.5D parallax & motion lighting rendered for immediate studio playback.",
         videoUrl: selectedVideo,
         thumbnailUrl: sourceImageUrl || `data:${sourceInlineData.mimeType};base64,${sourceInlineData.data}`,
         prompt,
@@ -1292,7 +1515,7 @@ Return JSON object:
 Only valid JSON.`;
 
       const response = await generateContentWithResilience(ai, {
-        model: "gemini-3.7-flash",
+        model: "gemini-3.8-flash",
         contents: logoPrompt,
         config: { responseMimeType: "application/json" },
       });
@@ -1565,7 +1788,7 @@ Return JSON object:
 Only valid JSON.`;
 
     const response = await generateContentWithResilience(ai, {
-      model: "gemini-3.7-flash",
+      model: config.models.text,
       contents: promptInstruction,
       config: { responseMimeType: "application/json" },
     });

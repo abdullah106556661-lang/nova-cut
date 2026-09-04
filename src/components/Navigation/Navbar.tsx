@@ -130,12 +130,15 @@ export const Navbar: React.FC = () => {
 
       {/* Right Controls */}
       <div className="flex items-center gap-2.5">
-        {/* Daily Credits & Reset Pill */}
+        {/* 3-Day Refresh Credits Pill */}
         {user && (
           <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 bg-slate-900/90 border border-slate-800 rounded-xl text-xs">
             <span className="text-slate-400 text-[11px]">Credits:</span>
             <span className="font-mono font-bold text-sky-400">
               {isAdminUser ? "Unlimited" : `${user.aiCreditsRemaining}/500`}
+            </span>
+            <span className="text-[10px] text-slate-500 font-mono hidden md:inline">
+              (3-Day Cycle)
             </span>
             <button
               onClick={() => setActiveTab("pricing")}

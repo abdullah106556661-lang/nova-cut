@@ -228,7 +228,7 @@ export const LiveAIAssistant: React.FC = () => {
 
   const toggleListening = () => {
     if (!recognitionRef.current) {
-      alert("Speech recognition is not supported in this browser. Please use Google Chrome or Edge.");
+      addNotification("Speech Recognition", "Speech recognition is not supported in this browser. Please use Chrome or Edge.", "error");
       return;
     }
     if (isListening) {
